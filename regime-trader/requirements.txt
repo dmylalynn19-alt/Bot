@@ -1,10 +1,11 @@
-alpaca-trade-api
+webull-python-sdk-core
+webull-python-sdk-trade
+webull-python-sdk-mdata
 pandas
 numpy
 scipy
 hmmlearn
 ta
-websocket-client
 schedule
 PyYAML
 python-dotenv

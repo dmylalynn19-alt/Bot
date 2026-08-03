@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from broker.alpaca_client import AlpacaClient
+from broker.webull_client import WebullClient
 from core.signal_generator import Signal
 
 
@@ -34,10 +34,17 @@ class OrderExecutor:
     """Places, modifies, and cancels orders against the broker.
 
     Args:
-        client: Configured Alpaca client used to submit orders.
+        client: Configured Webull client used to submit orders. NOTE: Webull's
+            OpenAPI order-placement endpoints are documented as not yet
+            available for US brokerage accounts (see broker.webull_client's
+            module docstring) - this class's methods will need to target
+            whichever of OrderOperation/OrderOperationV2's place_order,
+            replace_order, cancel_order(_v2) Webull enables for your account,
+            using client._api.order / client._api.order_v2 and the
+            OrderSide/OrderType/OrderTIF enums from webullsdktrade.common.
     """
 
-    def __init__(self, client: AlpacaClient) -> None:
+    def __init__(self, client: WebullClient) -> None:
         raise NotImplementedError
 
     def execute_signal(self, signal: Signal) -> Order:

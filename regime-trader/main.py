@@ -6,11 +6,12 @@
 
 `backtest` is fully wired to backtest.backtester.WalkForwardBacktester,
 backtest.performance.PerformanceAnalyzer, and backtest.stress_test.StressTester.
-It still depends on broker.alpaca_client.AlpacaClient and
-data.market_data.MarketDataFeed for historical bars, both of which remain
-unimplemented stubs - so `backtest` will raise NotImplementedError at the
-data-fetch step until those are built. Live trading (`run`/`build_pipeline`)
-is out of scope here and remains a stub too.
+It still depends on data.market_data.MarketDataFeed for historical bars,
+which remains an unimplemented stub - so `backtest` will raise
+NotImplementedError at the data-fetch step until that's built (the
+underlying broker.webull_client.WebullClient it would wrap is implemented
+for real). Live trading (`run`/`build_pipeline`) is out of scope here and
+remains a stub too.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import yaml
 
 
 def load_config(path: str = "config/settings.yaml") -> dict:
-    """Load settings.yaml and merge in Alpaca credentials from the environment (.env)."""
+    """Load settings.yaml and merge in Webull credentials from the environment (.env)."""
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -48,7 +49,7 @@ def run_backtest(args: argparse.Namespace, config: dict) -> None:
     benchmark comparison (--compare) and/or stress-test suite (--stress-test)
     if requested.
     """
-    from broker.alpaca_client import AlpacaClient
+    from broker.webull_client import WebullClient
     from data.market_data import MarketDataFeed
 
     from backtest.backtester import WalkForwardBacktester
@@ -59,10 +60,12 @@ def run_backtest(args: argparse.Namespace, config: dict) -> None:
     from core.risk_manager import RiskManager
 
     broker_cfg = config["broker"]
-    client = AlpacaClient(
-        api_key=os.environ.get("ALPACA_API_KEY", ""),
-        secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
-        paper=os.environ.get("ALPACA_PAPER", "true").lower() == "true",
+    client = WebullClient(
+        app_key=os.environ.get("WEBULL_APP_KEY", ""),
+        app_secret=os.environ.get("WEBULL_APP_SECRET", ""),
+        account_id=os.environ.get("WEBULL_ACCOUNT_ID", ""),
+        region=os.environ.get("WEBULL_REGION", broker_cfg.get("region", "us")),
+        paper=os.environ.get("WEBULL_PAPER", "true").lower() == "true",
     )
     feed = MarketDataFeed(client=client, symbols=args.symbols, timeframe=broker_cfg["timeframe"])
 

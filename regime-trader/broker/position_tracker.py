@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from broker.alpaca_client import AlpacaClient
+from broker.webull_client import WebullClient
 
 
 @dataclass
@@ -22,10 +22,15 @@ class PositionTracker:
     """Tracks open positions and portfolio-level P&L.
 
     Args:
-        client: Configured Alpaca client used to fetch position/account state.
+        client: Configured Webull client used to fetch position/account
+            state. NOTE: Webull's OpenAPI account-balance/position endpoints
+            (Account.get_account_position(_details), AccountV2.get_account_*)
+            are documented as not yet available for US brokerage accounts
+            (see broker.webull_client's module docstring) - verify against
+            your own approved App Key before relying on this.
     """
 
-    def __init__(self, client: AlpacaClient) -> None:
+    def __init__(self, client: WebullClient) -> None:
         raise NotImplementedError
 
     def get_positions(self) -> list[Position]:

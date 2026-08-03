@@ -10,7 +10,8 @@
 # Broker connectivity and universe
 # ------------------------------------------------------------------------------
 broker:
-  paper_trading: true          # true = use Alpaca paper endpoint, false = live trading
+  paper_trading: true          # true = use Webull's OpenAPI paper/simulation trading, false = live trading
+  region: "us"                 # Webull OpenAPI region: "us", "hk", or "jp" (must match your account's home market)
   symbols:                     # Universe of tickers the strategy trades
     - SPY
     - QQQ

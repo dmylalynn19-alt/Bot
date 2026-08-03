@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import pandas as pd
 
-from broker.alpaca_client import AlpacaClient
+from broker.webull_client import WebullClient
 
 
 class MarketDataFeed:
     """Fetches and caches historical and real-time market data.
 
     Args:
-        client: Configured Alpaca client used as the data source.
+        client: Configured Webull client used as the data source. Market
+            data (get_bars/get_latest_quote) is confirmed to work for US
+            symbols - see broker.webull_client's module docstring.
         symbols: Universe of symbols to fetch data for.
         timeframe: Bar timeframe (e.g. "1Day", "1Hour").
     """
 
-    def __init__(self, client: AlpacaClient, symbols: list[str], timeframe: str) -> None:
+    def __init__(self, client: WebullClient, symbols: list[str], timeframe: str) -> None:
         raise NotImplementedError
 
     def get_historical_bars(self, symbol: str, start: str, end: str) -> pd.DataFrame:

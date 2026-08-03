@@ -1,0 +1,29 @@
+# Environment / secrets
+.env
+config/credentials.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Distribution / packaging
+build/
+dist/
+
+# Logs and local data
+*.log
+logs/
+*.sqlite3
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

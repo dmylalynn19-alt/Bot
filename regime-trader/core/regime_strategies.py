@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.hmm_engine import Regime, RegimeState
+from core.hmm_engine import RegimeState
 
 
 @dataclass

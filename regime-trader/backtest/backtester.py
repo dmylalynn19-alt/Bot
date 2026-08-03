@@ -65,9 +65,13 @@ class WalkForwardBacktester:
         strategy: Strategy orchestrator; its regime->strategy mapping is
             rebuilt from scratch after every retrain via `update_regime_infos`.
         risk_manager: Risk manager to apply position/exposure limits.
-            Not yet wired into position sizing - core/risk_manager.py is
-            still a stub - so the strategy's raw target allocation is used
-            as-is for now.
+            core/risk_manager.py is implemented, but its validate_signal is
+            built for live, multi-symbol, per-trade order validation (stop-
+            distance sizing, correlation/sector caps, buying power, circuit
+            breakers on real daily/weekly P&L) - this single-symbol
+            allocation-based backtester doesn't call into it yet, so the
+            strategy's raw target allocation is used as-is for now. Stored
+            for interface parity and future wiring.
         step_size: How many out-of-sample bars the window advances each round.
         in_sample_bars: In-sample window length, in clean feature rows.
         out_of_sample_bars: Out-of-sample window length, in clean feature rows.

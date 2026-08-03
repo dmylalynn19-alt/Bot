@@ -64,6 +64,17 @@ risk:
   weekly_dd_reduce: 0.05       # Weekly drawdown level that triggers exposure reduction
   weekly_dd_halt: 0.07         # Weekly drawdown level that triggers a full trading halt
   max_dd_from_peak: 0.10       # Max drawdown from equity peak before halting trading
+  max_correlated_exposure: 0.30   # Max fraction of equity concentrated in one sector
+  min_confidence: 0.55             # Regime confidence below this forces leverage to 1.0x (risk manager's own copy of this threshold, kept independent of hmm.min_confidence)
+  min_position_dollars: 100        # Reject a sized position smaller than this
+  max_spread_pct: 0.005            # Reject an order when the bid-ask spread is at least this wide
+  duplicate_window_seconds: 60     # Block a duplicate same-symbol/same-direction order within this many seconds
+  correlation_reduce_threshold: 0.70   # 60-day rolling correlation with an existing position above this halves size
+  correlation_reject_threshold: 0.85   # ...above this rejects the trade outright
+  overnight_gap_multiple: 3.0      # Overnight position sizing assumes a gap-through this many multiples of the per-share stop distance
+  overnight_max_loss_pct: 0.02     # ...sized so that a gap-through loses at most this fraction of equity
+  leverage_force_position_count: 3 # This many or more open positions forces leverage back to 1.0x
+  trading_halt_lock_file: "trading_halted.lock"   # Written on a peak-drawdown halt; delete manually to resume trading
 
 # ------------------------------------------------------------------------------
 # Backtesting

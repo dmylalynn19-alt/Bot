@@ -56,6 +56,7 @@ def run_backtest(args: argparse.Namespace, config: dict) -> None:
     from backtest.stress_test import StressTester
     from core.hmm_engine import HMMEngine, RegimeInfo, RegimeLabel
     from core.regime_strategies import StrategyOrchestrator
+    from core.risk_manager import RiskManager
 
     broker_cfg = config["broker"]
     client = AlpacaClient(
@@ -82,14 +83,17 @@ def run_backtest(args: argparse.Namespace, config: dict) -> None:
 
         engine = HMMEngine(**hmm_config)
         strategy = StrategyOrchestrator(strategy_config, placeholder_regime_infos, min_confidence=hmm_config["min_confidence"])
-        # core/risk_manager.py is still a stub (its __init__ raises
-        # NotImplementedError), and WalkForwardBacktester only stores this
-        # without calling into it yet - see backtest/backtester.py - so pass
-        # None until it's implemented.
+        # RiskManager.validate_signal is built for live, multi-symbol,
+        # per-trade order validation (stop-distance sizing, correlation/
+        # sector caps, buying power, ...); this single-symbol allocation-based
+        # backtester doesn't call into it yet - see backtest/backtester.py.
+        # Constructed here anyway so its circuit breakers are exercised
+        # end to end once that wiring is added.
+        risk_manager = RiskManager(**config["risk"])
         backtester = WalkForwardBacktester(
             hmm_engine=engine,
             strategy=strategy,
-            risk_manager=None,
+            risk_manager=risk_manager,
             step_size=backtest_config["step_size"],
             symbol=symbol,
         )

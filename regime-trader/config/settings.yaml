@@ -1,0 +1,91 @@
+# ==============================================================================
+# regime-trader configuration
+#
+# All configurable parameters for the regime-detection trading system.
+# Values here are defaults for paper trading / development. Review every
+# section before running against a live account.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Broker connectivity and universe
+# ------------------------------------------------------------------------------
+broker:
+  paper_trading: true          # true = use Alpaca paper endpoint, false = live trading
+  symbols:                     # Universe of tickers the strategy trades
+    - SPY
+    - QQQ
+    - AAPL
+    - MSFT
+    - AMZN
+    - GOOGL
+    - NVDA
+    - META
+    - TSLA
+    - AMD
+  timeframe: 1Day               # Bar timeframe for data fetching (e.g. 1Day, 1Hour, 15Min)
+
+# ------------------------------------------------------------------------------
+# Hidden Markov Model regime detection
+# ------------------------------------------------------------------------------
+hmm:
+  n_candidates: [3, 4, 5, 6, 7]  # Candidate hidden-state counts to evaluate for model selection
+  n_init: 10                     # Number of random initializations per candidate model
+  covariance_type: full          # HMM emission covariance type (full, diag, tied, spherical)
+  min_train_bars: 252            # Minimum bars of history required before fitting (~1 trading year)
+  stability_bars: 3              # Consecutive bars a regime must persist before being confirmed
+  flicker_window: 20             # Rolling window (bars) used to detect regime "flicker"
+  flicker_threshold: 4           # Max allowed regime changes within flicker_window before flagging instability
+  min_confidence: 0.55           # Minimum posterior probability required to act on a regime call
+
+# ------------------------------------------------------------------------------
+# Regime-based allocation strategy
+# ------------------------------------------------------------------------------
+strategy:
+  low_vol_allocation: 0.95            # Target portfolio allocation in a low-volatility regime
+  mid_vol_allocation_trend: 0.95      # Target allocation in mid-volatility regime, trend confirmed
+  mid_vol_allocation_no_trend: 0.60   # Target allocation in mid-volatility regime, no confirmed trend
+  high_vol_allocation: 0.60           # Target allocation in a high-volatility regime
+  low_vol_leverage: 1.25              # Leverage multiplier applied only in low-volatility regime
+  rebalance_threshold: 0.10           # Fractional drift from target allocation that triggers a rebalance
+  uncertainty_size_mult: 0.50         # Position size multiplier applied when regime confidence is low
+
+# ------------------------------------------------------------------------------
+# Risk management
+# ------------------------------------------------------------------------------
+risk:
+  max_risk_per_trade: 0.01     # Max fraction of equity risked on a single trade
+  max_exposure: 0.80           # Max total portfolio exposure as a fraction of equity
+  max_leverage: 1.25           # Hard cap on account leverage
+  max_single_position: 0.15    # Max fraction of equity in any single position
+  max_concurrent: 5            # Max number of concurrently open positions
+  max_daily_trades: 20         # Max number of trades allowed per day
+  daily_dd_reduce: 0.02        # Daily drawdown level that triggers exposure reduction
+  daily_dd_halt: 0.03          # Daily drawdown level that triggers a full trading halt
+  weekly_dd_reduce: 0.05       # Weekly drawdown level that triggers exposure reduction
+  weekly_dd_halt: 0.07         # Weekly drawdown level that triggers a full trading halt
+  max_dd_from_peak: 0.10       # Max drawdown from equity peak before halting trading
+  max_correlated_exposure: 0.30   # Max fraction of equity concentrated in one sector
+  min_confidence: 0.55             # Regime confidence below this forces leverage to 1.0x (risk manager's own copy of this threshold, kept independent of hmm.min_confidence)
+  min_position_dollars: 100        # Reject a sized position smaller than this
+  max_spread_pct: 0.005            # Reject an order when the bid-ask spread is at least this wide
+  duplicate_window_seconds: 60     # Block a duplicate same-symbol/same-direction order within this many seconds
+  correlation_reduce_threshold: 0.70   # 60-day rolling correlation with an existing position above this halves size
+  correlation_reject_threshold: 0.85   # ...above this rejects the trade outright
+  overnight_gap_multiple: 3.0      # Overnight position sizing assumes a gap-through this many multiples of the per-share stop distance
+  overnight_max_loss_pct: 0.02     # ...sized so that a gap-through loses at most this fraction of equity
+  leverage_force_position_count: 3 # This many or more open positions forces leverage back to 1.0x
+  trading_halt_lock_file: "trading_halted.lock"   # Written on a peak-drawdown halt; delete manually to resume trading
+
+# ------------------------------------------------------------------------------
+# Backtesting
+# ------------------------------------------------------------------------------
+backtest:
+  step_size: 126                # Walk-forward step size in bars (~6 trading months)
+  risk_free_rate: 0.045         # Annualized risk-free rate used for Sharpe/Sortino calculations
+
+# ------------------------------------------------------------------------------
+# Monitoring
+# ------------------------------------------------------------------------------
+monitoring:
+  dashboard_refresh_seconds: 5   # How often the live dashboard refreshes
+  alert_rate_limit_minutes: 15   # Minimum minutes between repeat alerts of the same type

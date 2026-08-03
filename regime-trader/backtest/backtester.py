@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from core.hmm_engine import HMMEngine
-from core.regime_strategies import RegimeStrategy
+from core.regime_strategies import StrategyOrchestrator
 from core.risk_manager import RiskManager
 
 
@@ -38,7 +38,7 @@ class WalkForwardBacktester:
     def __init__(
         self,
         hmm_engine: HMMEngine,
-        strategy: RegimeStrategy,
+        strategy: StrategyOrchestrator,
         risk_manager: RiskManager,
         step_size: int,
     ) -> None:

@@ -21,6 +21,16 @@ not raw price bars: the feature warm-up itself (252-bar rolling z-score,
 200-bar SMA, ...) consumes about a year of history before the first row is
 usable, so `data` passed to `run()` needs roughly 2 years of lookback before
 `start` for the very first window to have enough in-sample rows.
+
+REALISTIC SIMULATION
+---------------------
+- Fill delay: a rebalance decided from bar N's close-of-day signal executes
+  at bar N+1's open, never at bar N's own close - see `_pending_target`.
+- Slippage: the fill price is nudged against the trade (configurable, default
+  0.05%) - buys fill worse (higher), sells fill worse (lower).
+- No individual trade stops here: `Signal.stop_loss` is produced by the
+  strategy layer for live trading, but this backtester only ever tracks a
+  single portfolio-level allocation, so it is never read.
 """
 
 from __future__ import annotations
@@ -63,6 +73,10 @@ class WalkForwardBacktester:
         out_of_sample_bars: Out-of-sample window length, in clean feature rows.
         symbol: Label for the single instrument this backtest trades.
         initial_cash: Starting cash balance.
+        slippage: Fractional price impact applied against every fill (default
+            0.0005 = 0.05%): worse (higher) fill price on buys, worse (lower)
+            fill price on sells. Applied only to the fill, not to the
+            target-allocation sizing math, which always uses the clean price.
     """
 
     def __init__(
@@ -75,6 +89,7 @@ class WalkForwardBacktester:
         out_of_sample_bars: int = 126,
         symbol: str = "SYMBOL",
         initial_cash: float = 100_000.0,
+        slippage: float = 0.0005,
     ) -> None:
         self.hmm_engine = hmm_engine
         self.strategy = strategy
@@ -84,10 +99,12 @@ class WalkForwardBacktester:
         self.out_of_sample_bars = out_of_sample_bars
         self.symbol = symbol
         self.initial_cash = initial_cash
+        self.slippage = slippage
 
         self._cash = initial_cash
         self._shares = 0
         self._current_allocation = 0.0
+        self._pending_target: float | None = None
         self._equity_records: list[dict] = []
         self._trade_records: list[dict] = []
         self._regime_records: list[dict] = []
@@ -158,9 +175,10 @@ class WalkForwardBacktester:
            trained model's regime metadata.
         c. Walk out-of-sample bar by bar: a look-ahead-free filtered regime call
            (forward algorithm only) feeds the strategy, which returns a target
-           allocation; rebalance only when it has drifted >10% from current.
+           allocation; rebalance only when it has drifted >10% from current,
+           and the fill executes at the *next* bar's open (1-bar fill delay).
         d. Record the regime call and mark-to-market equity at every OOS bar.
-        e. Record a "trade" whenever a rebalance actually happens.
+        e. Record a "trade" whenever a rebalance fill actually happens.
         """
         is_features = full_features.loc[is_index]
         self.hmm_engine.fit(is_features)
@@ -184,11 +202,18 @@ class WalkForwardBacktester:
             self.hmm_engine.predict_regime_filtered(full_features.loc[is_index[0] : ts].dropna())
 
         for ts in oos_index:
+            # Execute any signal decided on a previous bar, at THIS bar's open
+            # (1-bar fill delay: signal bar N -> rebalance at bar N+1 open).
+            if self._pending_target is not None:
+                open_price = float(data.loc[ts, "open"])
+                self._execute_fill(self._pending_target, open_price, ts)
+                self._pending_target = None
+
             features_up_to_now = full_features.loc[is_index[0] : ts].dropna()
             regime_state = self.hmm_engine.predict_regime_filtered(features_up_to_now)
             is_flickering = self.hmm_engine.is_flickering()
 
-            price = float(data.loc[ts, "close"])
+            close_price = float(data.loc[ts, "close"])
             bars_so_far = data.loc[:ts]
 
             signals = self.strategy.generate_signals(
@@ -201,9 +226,9 @@ class WalkForwardBacktester:
             target_allocation = signal.position_size_pct * signal.leverage if signal is not None else 0.0
 
             if self.strategy.needs_rebalance(self._current_allocation, target_allocation):
-                self._rebalance(target_allocation, price, ts)
+                self._pending_target = target_allocation
 
-            equity = self._cash + self._shares * price  # mark to market
+            equity = self._cash + self._shares * close_price  # mark to market
             self._equity_records.append({"timestamp": ts, "equity": equity})
             self._regime_records.append(
                 {
@@ -219,12 +244,21 @@ class WalkForwardBacktester:
                 }
             )
 
-    def _rebalance(self, target_allocation: float, price: float, timestamp: pd.Timestamp) -> None:
+    def _execute_fill(self, target_allocation: float, price: float, timestamp: pd.Timestamp) -> None:
         # ALLOCATION MATH - must be exactly this:
         equity = self._cash + self._shares * price
         target_shares = int(equity * target_allocation / price)
         delta = target_shares - self._shares
-        self._cash -= delta * price
+
+        # Slippage moves the FILL price against the trade; sizing above still
+        # uses the clean reference `price`.
+        if delta > 0:
+            fill_price = price * (1 + self.slippage)
+        elif delta < 0:
+            fill_price = price * (1 - self.slippage)
+        else:
+            fill_price = price
+        self._cash -= delta * fill_price
 
         allocation_before = self._current_allocation
         self._shares = target_shares
@@ -234,6 +268,7 @@ class WalkForwardBacktester:
             {
                 "timestamp": timestamp,
                 "price": price,
+                "fill_price": fill_price,
                 "shares_delta": delta,
                 "shares_after": self._shares,
                 "allocation_before": allocation_before,
@@ -246,6 +281,7 @@ class WalkForwardBacktester:
         self._cash = self.initial_cash
         self._shares = 0
         self._current_allocation = 0.0
+        self._pending_target = None
         self._equity_records = []
         self._trade_records = []
         self._regime_records = []

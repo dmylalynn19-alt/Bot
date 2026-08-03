@@ -8,3 +8,4 @@ websocket-client
 schedule
 PyYAML
 python-dotenv
+rich

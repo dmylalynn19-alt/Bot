@@ -64,3 +64,67 @@ class AlpacaClient:
     def is_market_open(self) -> bool:
         """Check whether the market is currently open."""
         return bool(self._api.get_clock().is_open)
+
+    def submit_order(
+        self,
+        symbol: str,
+        qty: float,
+        side: str,
+        order_type: str = "market",
+        time_in_force: str = "day",
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
+        """Submit an order. `side` is "buy" or "sell"; `qty` must be positive."""
+        order = self._api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            type=order_type,
+            time_in_force=time_in_force,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            client_order_id=client_order_id,
+        )
+        return order._raw
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel an open order by ID."""
+        self._api.cancel_order(order_id)
+
+    def replace_order(
+        self,
+        order_id: str,
+        qty: float | None = None,
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+        time_in_force: str | None = None,
+    ) -> dict:
+        """Modify an open order's quantity/price/time-in-force."""
+        order = self._api.replace_order(
+            order_id, qty=qty, limit_price=limit_price, stop_price=stop_price, time_in_force=time_in_force
+        )
+        return order._raw
+
+    def get_order(self, order_id: str) -> dict:
+        """Fetch a single order's current state by ID."""
+        return self._api.get_order(order_id)._raw
+
+    def list_orders(self, status: str = "open", after: str | None = None) -> list[dict]:
+        """List orders. `status` is "open", "closed", or "all". `after` (ISO
+        8601) restricts to orders submitted after that time."""
+        return [order._raw for order in self._api.list_orders(status=status, after=after)]
+
+    def list_positions(self) -> list[dict]:
+        """List all currently open positions."""
+        return [position._raw for position in self._api.list_positions()]
+
+    def get_position(self, symbol: str) -> dict | None:
+        """Fetch the open position for a single symbol, or None if there isn't one."""
+        try:
+            return self._api.get_position(symbol)._raw
+        except Exception as exc:
+            if "position does not exist" in str(exc).lower() or getattr(exc, "status_code", None) == 404:
+                return None
+            raise

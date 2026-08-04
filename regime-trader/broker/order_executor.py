@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
 from broker.alpaca_client import AlpacaClient
-from core.signal_generator import Signal
+from core.regime_strategies import Signal
+
+logger = logging.getLogger(__name__)
+
+# Alpaca's order lifecycle has more states than we act on distinctly; anything
+# not in this map (e.g. "accepted", "pending_new") is treated as PENDING.
+_STATUS_MAP = {
+    "new": "pending",
+    "accepted": "pending",
+    "pending_new": "pending",
+    "filled": "filled",
+    "partially_filled": "partially_filled",
+    "canceled": "canceled",
+    "expired": "canceled",
+    "rejected": "rejected",
+}
 
 
 class OrderStatus(Enum):
@@ -30,6 +46,16 @@ class Order:
     status: OrderStatus
 
 
+def _to_order(raw: dict) -> Order:
+    return Order(
+        order_id=raw["id"],
+        symbol=raw["symbol"],
+        quantity=float(raw["qty"]),
+        side=raw["side"],
+        status=OrderStatus(_STATUS_MAP.get(raw["status"], "pending")),
+    )
+
+
 class OrderExecutor:
     """Places, modifies, and cancels orders against the broker.
 
@@ -38,20 +64,45 @@ class OrderExecutor:
     """
 
     def __init__(self, client: AlpacaClient) -> None:
-        raise NotImplementedError
+        self.client = client
 
-    def execute_signal(self, signal: Signal) -> Order:
-        """Translate a trading signal into a submitted order."""
-        raise NotImplementedError
+    def execute_signal(self, signal: Signal, current_quantity: float, equity: float) -> Order | None:
+        """Translate a risk-approved signal into a submitted market order.
+
+        Computes the target share count from `signal.position_size_pct *
+        signal.leverage` (the same allocation math as
+        backtest.backtester.WalkForwardBacktester), diffs it against
+        `current_quantity` already held, and submits the delta as a single
+        market order. Returns None (submits nothing) if the delta rounds to
+        zero shares - i.e. no rebalance is actually needed.
+        """
+        target_allocation = signal.position_size_pct * signal.leverage
+        target_shares = int(equity * target_allocation / signal.entry_price)
+        delta = target_shares - current_quantity
+        if delta == 0:
+            logger.info("%s: target allocation already matches current position, no order needed", signal.symbol)
+            return None
+
+        side = "buy" if delta > 0 else "sell"
+        logger.info("%s: submitting %s %d shares (target=%d, current=%d)", signal.symbol, side, abs(delta), target_shares, current_quantity)
+        raw_order = self.client.submit_order(symbol=signal.symbol, qty=abs(delta), side=side, order_type="market", time_in_force="day")
+        return _to_order(raw_order)
 
     def cancel_order(self, order_id: str) -> bool:
-        """Cancel an open order by ID."""
-        raise NotImplementedError
+        """Cancel an open order by ID. Returns True if the cancel request succeeded."""
+        try:
+            self.client.cancel_order(order_id)
+            return True
+        except Exception:
+            logger.exception("Failed to cancel order %s", order_id)
+            return False
 
     def modify_order(self, order_id: str, **kwargs) -> Order:
-        """Modify an open order's parameters (e.g. quantity, limit price)."""
-        raise NotImplementedError
+        """Modify an open order's parameters (qty, limit_price, stop_price, time_in_force)."""
+        raw_order = self.client.replace_order(order_id, **kwargs)
+        return _to_order(raw_order)
 
     def get_order_status(self, order_id: str) -> OrderStatus:
         """Fetch the current status of an order."""
-        raise NotImplementedError
+        raw_order = self.client.get_order(order_id)
+        return _to_order(raw_order).status

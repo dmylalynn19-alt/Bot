@@ -6,8 +6,19 @@ allocation strategy maps each regime to a target exposure and leverage; a
 risk manager enforces position, exposure, and drawdown limits; and a signal
 generator drives order execution through Alpaca.
 
-**Status:** skeleton only. Module interfaces (classes, type hints,
-docstrings) are in place; no trading logic is implemented yet.
+**Status:** the full pipeline is implemented and wired end-to-end - HMM
+engine, feature engineering, regime strategies, risk manager, walk-forward
+backtester, performance analytics, stress testing, the Alpaca broker client,
+market data fetching, order execution, position tracking, and the live/paper
+daily trading loop (`python main.py run`). `monitoring/*` (structured
+logging, dashboard, alerts) is still an interface-only stub - everything
+currently logs via the standard `logging` module instead.
+
+This is a **daily-bar** strategy: it checks each symbol's regime and
+rebalances at most once per day (see `config/settings.yaml`'s
+`broker.timeframe`), not an intraday/tick-by-tick trader. `ALPACA_PAPER=true`
+in `.env` is the default and strongly recommended until you've watched it
+run correctly for a while.
 
 ## Project structure
 
@@ -67,7 +78,14 @@ Review and adjust `config/settings.yaml` before running.
 ## Running
 
 ```bash
-python main.py
+# Run the walk-forward backtest
+python main.py backtest --symbols SPY --start 2019-01-01 --end 2024-12-31 --compare
+
+# Execute a single live/paper trading pass right now, then exit
+python main.py run --once
+
+# Run forever, one trading pass per day at 09:35 system-local time
+python main.py run
 ```
 
 ## Testing

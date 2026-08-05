@@ -20,6 +20,7 @@ class Position:
     avg_entry_price: float
     current_price: float
     unrealized_pnl: float
+    asset_class: str = "us_equity"  # "us_equity" or "us_option" - see AlpacaClient
 
 
 def _to_position(raw: dict) -> Position:
@@ -27,8 +28,9 @@ def _to_position(raw: dict) -> Position:
         symbol=raw["symbol"],
         quantity=float(raw["qty"]),
         avg_entry_price=float(raw["avg_entry_price"]),
-        current_price=float(raw["current_price"]),
-        unrealized_pnl=float(raw["unrealized_pl"]),
+        current_price=float(raw["current_price"]) if raw.get("current_price") is not None else float(raw["avg_entry_price"]),
+        unrealized_pnl=float(raw["unrealized_pl"]) if raw.get("unrealized_pl") is not None else 0.0,
+        asset_class=str(raw.get("asset_class", "us_equity")),
     )
 
 

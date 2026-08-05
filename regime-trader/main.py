@@ -3,20 +3,31 @@
     python main.py backtest --symbols SPY --start 2019-01-01 --end 2024-12-31
     python main.py backtest --symbols SPY --start 2019-01-01 --end 2024-12-31 --compare
     python main.py backtest --stress-test
-    python main.py run --once      # execute a single live/paper pass now and exit
-    python main.py run             # run forever, one pass per day at 09:35
+    python main.py run --once                    # options strategy, single pass now
+    python main.py run                            # options strategy, daily at 09:35
+    python main.py run --once --strategy regime   # HMM/regime strategy instead
+
+Two independent live/paper strategies share one Alpaca connection and one
+RiskManager:
+
+- "options" (default): core.indicator_signals.IndicatorSignalGenerator reads
+  RSI/MACD/SMA-crossover/Bollinger confluence on each symbol, and
+  core.options_strategy.OptionsStrategy turns a strong-enough directional
+  read into a sized, single-leg call or put (buying only, never
+  writing/selling) via the live option chain. Built via
+  build_options_pipeline()/run_once_options().
+- "regime": the original HMM volatility-regime stock allocator (one
+  HMMEngine + StrategyOrchestrator per symbol). Built via
+  build_regime_pipeline()/run_once_regime() (build_pipeline()/run_once() are
+  kept as aliases for these).
 
 `backtest` is fully wired to backtest.backtester.WalkForwardBacktester,
-backtest.performance.PerformanceAnalyzer, and backtest.stress_test.StressTester.
+backtest.performance.PerformanceAnalyzer, and backtest.stress_test.StressTester
+(the "regime" strategy only - the options strategy doesn't have a backtester
+yet).
 
-`run`/`run_once`/`build_pipeline` wire together broker.alpaca_client.AlpacaClient,
-data.market_data.MarketDataFeed, one core.hmm_engine.HMMEngine +
-core.regime_strategies.StrategyOrchestrator per symbol, a shared
-core.risk_manager.RiskManager, and broker.order_executor.OrderExecutor /
-broker.position_tracker.PositionTracker for a real (paper-by-default) daily
-trading loop. This strategy operates on DAILY bars (config broker.timeframe) -
-it checks the regime and rebalances at most once per day, it does not trade
-intraday.
+Both live strategies operate on DAILY bars (config broker.timeframe) - they
+check for a signal and act at most once per day, not intraday.
 """
 
 from __future__ import annotations
@@ -53,12 +64,17 @@ def _build_alpaca_client():
 
 
 def build_pipeline(config: dict) -> dict:
+    """Alias for build_regime_pipeline (kept for backward compatibility)."""
+    return build_regime_pipeline(config)
+
+
+def build_regime_pipeline(config: dict) -> dict:
     """Wire up the client, data feed, one HMMEngine/StrategyOrchestrator pair
     per symbol, a shared RiskManager, and the OrderExecutor/PositionTracker.
 
-    Returns a dict consumed by run_once()/run(): client, feed, risk_manager,
-    order_executor, position_tracker, signal_generators (dict[symbol,
-    SignalGenerator]).
+    Returns a dict consumed by run_once_regime()/run(): client, feed,
+    risk_manager, order_executor, position_tracker, signal_generators
+    (dict[symbol, SignalGenerator]).
     """
     from broker.order_executor import OrderExecutor
     from broker.position_tracker import PositionTracker
@@ -102,6 +118,11 @@ def build_pipeline(config: dict) -> dict:
 
 
 def run_once(config: dict, pipeline: dict | None = None) -> dict:
+    """Alias for run_once_regime (kept for backward compatibility)."""
+    return run_once_regime(config, pipeline=pipeline)
+
+
+def run_once_regime(config: dict, pipeline: dict | None = None) -> dict:
     """Execute a single trading pass across every configured symbol.
 
     For each symbol: refits its HMM on the trailing `hmm.min_train_bars`
@@ -116,7 +137,7 @@ def run_once(config: dict, pipeline: dict | None = None) -> dict:
     from core.risk_manager import PortfolioState
     from data.feature_engineering import build_feature_matrix
 
-    pipeline = pipeline if pipeline is not None else build_pipeline(config)
+    pipeline = pipeline if pipeline is not None else build_regime_pipeline(config)
     client = pipeline["client"]
     feed = pipeline["feed"]
     order_executor = pipeline["order_executor"]
@@ -182,23 +203,191 @@ def run_once(config: dict, pipeline: dict | None = None) -> dict:
     return decisions
 
 
-def run(config: dict, once: bool = False) -> None:
+def build_options_pipeline(config: dict) -> dict:
+    """Wire up the client, data feed, indicator/options strategy engines, a
+    shared RiskManager, and the OrderExecutor/PositionTracker.
+
+    Returns a dict consumed by run_once_options()/run(): client, feed,
+    risk_manager, order_executor, position_tracker, indicator_generator,
+    options_strategy.
+    """
+    from broker.order_executor import OrderExecutor
+    from broker.position_tracker import PositionTracker
+    from core.indicator_signals import IndicatorSignalGenerator
+    from core.options_strategy import OptionsStrategy
+    from core.risk_manager import RiskManager
+    from data.market_data import MarketDataFeed
+
+    broker_cfg = config["broker"]
+    client = _build_alpaca_client()
+
+    return {
+        "client": client,
+        "feed": MarketDataFeed(client=client, symbols=broker_cfg["symbols"], timeframe=broker_cfg["timeframe"]),
+        "risk_manager": RiskManager(**config["risk"]),
+        "order_executor": OrderExecutor(client),
+        "position_tracker": PositionTracker(client),
+        "indicator_generator": IndicatorSignalGenerator(**config["indicators"]),
+        "options_strategy": OptionsStrategy(**config["options_strategy"]),
+    }
+
+
+def run_once_options(config: dict, pipeline: dict | None = None) -> dict:
+    """Execute a single options-trading pass.
+
+    For every open option position: checks stop-loss/take-profit thresholds
+    on premium P&L and closes it if hit, or if the underlying's indicator
+    confluence has reversed against the position's direction. For every
+    configured symbol WITHOUT an open option position: computes the
+    indicator confluence, and if it's a strong enough directional signal,
+    fetches the live option chain, selects a contract, sizes it,
+    risk-checks it, and submits it.
+
+    Skips entirely (returns {}) if the market is closed. Returns
+    {symbol_or_occ_symbol: OptionRiskDecision | "closed: <reason>"} so the
+    caller/CLI can log what happened.
+    """
+    from core.indicator_signals import Direction
+    from core.risk_manager import PortfolioState
+
+    pipeline = pipeline if pipeline is not None else build_options_pipeline(config)
+    client = pipeline["client"]
+    feed = pipeline["feed"]
+    order_executor = pipeline["order_executor"]
+    position_tracker = pipeline["position_tracker"]
+    risk_manager = pipeline["risk_manager"]
+    indicator_generator = pipeline["indicator_generator"]
+    options_strategy = pipeline["options_strategy"]
+    symbols = config["broker"]["symbols"]
+
+    if not client.is_market_open():
+        logger.info("Market is closed - skipping this run")
+        return {}
+
+    logger.info("Refreshing market data for %d symbols", len(symbols))
+    feed.update()
+
+    account = client.get_account()
+    equity = float(account["equity"])
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    all_positions = position_tracker.get_positions()
+    option_positions = [p for p in all_positions if p.asset_class == "us_option"]
+
+    portfolio = PortfolioState(
+        equity=equity,
+        cash=float(account["cash"]),
+        buying_power=float(account["buying_power"]),
+        positions={p.symbol: p for p in all_positions},
+        daily_pnl_pct=position_tracker.get_daily_pnl(),
+        peak_equity=position_tracker.get_peak_equity(),
+        trades_today=len(client.list_orders(status="closed", after=today_start)),
+    )
+
+    results: dict = {}
+    open_underlyings: set[str] = set()
+
+    # 1. Manage existing option positions: exit on stop/target/reversal.
+    for pos in option_positions:
+        try:
+            details = client.get_option_contract_details(pos.symbol)
+        except Exception:
+            logger.exception("Could not look up contract details for %s - skipping exit check", pos.symbol)
+            continue
+        underlying = details["underlying_symbol"]
+        open_underlyings.add(underlying)
+
+        cost_basis = abs(pos.quantity) * pos.avg_entry_price * 100
+        pnl_pct = pos.unrealized_pnl / cost_basis if cost_basis else 0.0
+
+        exit_reason = None
+        if pnl_pct <= -options_strategy.stop_loss_pct:
+            exit_reason = f"stop loss hit ({pnl_pct:.1%})"
+        elif pnl_pct >= options_strategy.take_profit_pct:
+            exit_reason = f"take profit hit ({pnl_pct:.1%})"
+        else:
+            try:
+                bars = feed.get_cached_bars(underlying)
+                indicator_signal = indicator_generator.generate(underlying, bars)
+                position_direction = Direction.BULLISH if str(details["type"]).lower() == "call" else Direction.BEARISH
+                opposite = Direction.BEARISH if position_direction == Direction.BULLISH else Direction.BULLISH
+                if indicator_signal.direction == opposite and indicator_signal.confidence >= options_strategy.min_confidence:
+                    exit_reason = f"indicator reversal ({indicator_signal.reasoning})"
+            except KeyError:
+                pass
+
+        if exit_reason:
+            order = order_executor.close_option_position(pos.symbol, abs(pos.quantity), reason=exit_reason)
+            results[pos.symbol] = f"closed: {exit_reason}"
+            if order is not None:
+                logger.info("%s: closed with order %s", pos.symbol, order)
+
+    # 2. Look for new entries on symbols without an open position.
+    for symbol in symbols:
+        if symbol in open_underlyings:
+            continue
+        try:
+            bars = feed.get_cached_bars(symbol)
+        except KeyError:
+            logger.warning("No data for %s - skipping", symbol)
+            continue
+
+        indicator_signal = indicator_generator.generate(symbol, bars)
+        if indicator_signal.direction == Direction.NEUTRAL:
+            logger.info("%s: no signal (%s)", symbol, indicator_signal.reasoning)
+            continue
+
+        right = "call" if indicator_signal.direction == Direction.BULLISH else "put"
+        expiration_gte, expiration_lte = options_strategy.expiration_window()
+        chain = client.get_option_chain(symbol, right, expiration_gte.isoformat(), expiration_lte.isoformat())
+
+        option_signal = options_strategy.generate(indicator_signal, chain, equity)
+        if option_signal is None:
+            logger.info("%s: %s signal did not produce a tradeable contract", symbol, indicator_signal.direction.value)
+            continue
+
+        decision = risk_manager.validate_option_signal(option_signal, portfolio)
+        results[symbol] = decision
+        if not decision.approved:
+            logger.info("%s: not approved (%s)", symbol, decision.rejection_reason)
+            continue
+        if decision.modifications:
+            logger.info("%s: approved with modifications: %s", symbol, decision.modifications)
+
+        order = order_executor.execute_option_signal(decision.modified_signal)
+        if order is not None:
+            logger.info("%s: submitted order %s", symbol, order)
+
+    return results
+
+
+def run(config: dict, once: bool = False, strategy: str = "options") -> None:
     """Run the live/paper trading loop.
 
-    once=True: build the pipeline, execute a single run_once() pass, and
-    return - useful for testing or a manual/cron-triggered run.
+    strategy: "options" (default) runs the indicator-driven directional
+    calls/puts strategy; "regime" runs the HMM/volatility-regime stock
+    allocator instead.
+    once=True: build the pipeline, execute a single pass, and return -
+    useful for testing or a manual/cron-triggered run.
     once=False (default): run forever, executing one pass per day at 09:35
     system-local time via the `schedule` library. Ctrl+C to stop.
     """
-    pipeline = build_pipeline(config)
+    if strategy == "regime":
+        build_fn, run_fn = build_regime_pipeline, run_once_regime
+    elif strategy == "options":
+        build_fn, run_fn = build_options_pipeline, run_once_options
+    else:
+        raise ValueError(f"Unknown strategy '{strategy}'; expected 'options' or 'regime'")
+
+    pipeline = build_fn(config)
 
     if once:
-        run_once(config, pipeline=pipeline)
+        run_fn(config, pipeline=pipeline)
         return
 
     import schedule
 
-    schedule.every().day.at("09:35").do(run_once, config=config, pipeline=pipeline)
+    schedule.every().day.at("09:35").do(run_fn, config=config, pipeline=pipeline)
     logger.info("Scheduled to run daily at 09:35 (system-local time) - press Ctrl+C to stop")
     while True:
         schedule.run_pending()
@@ -304,6 +493,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument(
         "--once", action="store_true", help="Execute a single trading pass immediately and exit, instead of scheduling daily"
     )
+    run_parser.add_argument(
+        "--strategy",
+        choices=["options", "regime"],
+        default="options",
+        help="'options' (default): indicator-driven directional calls/puts. 'regime': HMM/volatility-regime stock allocator.",
+    )
 
     return parser.parse_args(argv)
 
@@ -320,7 +515,7 @@ def main() -> None:
             args.symbols = config["broker"]["symbols"]
         run_backtest(args, config)
     elif args.command == "run":
-        run(config, once=args.once)
+        run(config, once=args.once, strategy=args.strategy)
     else:
         run(config)
 

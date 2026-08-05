@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from broker.alpaca_client import AlpacaClient
+from core.options_strategy import OptionSignal
 from core.regime_strategies import Signal
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,32 @@ class OrderExecutor:
         side = "buy" if delta > 0 else "sell"
         logger.info("%s: submitting %s %d shares (target=%d, current=%d)", signal.symbol, side, abs(delta), target_shares, current_quantity)
         raw_order = self.client.submit_order(symbol=signal.symbol, qty=abs(delta), side=side, order_type="market", time_in_force="day")
+        return _to_order(raw_order)
+
+    def execute_option_signal(self, signal: OptionSignal) -> Order | None:
+        """Submit a limit order to open a directional options position.
+
+        Always a limit order at `signal.limit_price` (the mid-price used for
+        sizing), never a market order - option bid/ask spreads can be wide,
+        and a market order risks a much worse fill than what was sized for.
+        Returns None if `signal.contracts` is less than 1.
+        """
+        if signal.contracts < 1:
+            return None
+        logger.info(
+            "%s: submitting buy %d contracts of %s @ $%.2f limit", signal.symbol, signal.contracts, signal.occ_symbol, signal.limit_price
+        )
+        raw_order = self.client.submit_order(
+            symbol=signal.occ_symbol, qty=signal.contracts, side="buy", order_type="limit", time_in_force="day", limit_price=signal.limit_price
+        )
+        return _to_order(raw_order)
+
+    def close_option_position(self, occ_symbol: str, contracts: float, reason: str = "") -> Order | None:
+        """Submit a market order to close (all or part of) an open option position."""
+        if contracts <= 0:
+            return None
+        logger.info("%s: closing %d contracts (%s)", occ_symbol, contracts, reason or "no reason given")
+        raw_order = self.client.submit_order(symbol=occ_symbol, qty=contracts, side="sell", order_type="market", time_in_force="day")
         return _to_order(raw_order)
 
     def cancel_order(self, order_id: str) -> bool:

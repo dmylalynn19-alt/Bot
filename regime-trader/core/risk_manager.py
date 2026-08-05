@@ -29,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 
 from broker.position_tracker import Position
+from core.options_strategy import OptionSignal
 from core.regime_strategies import Direction, Signal
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,17 @@ class RiskDecision:
 
     approved: bool
     modified_signal: Signal | None
+    rejection_reason: str | None
+    modifications: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OptionRiskDecision:
+    """The outcome of validate_option_signal - the options counterpart to
+    RiskDecision, carrying an OptionSignal instead of a stock Signal."""
+
+    approved: bool
+    modified_signal: OptionSignal | None
     rejection_reason: str | None
     modifications: list[str] = field(default_factory=list)
 
@@ -606,3 +618,83 @@ class RiskManager:
             target_allocation = leverage_headroom
 
         return target_allocation, mods
+
+    # ------------------------------------------------------------------
+    # Options
+    # ------------------------------------------------------------------
+
+    def validate_option_signal(
+        self,
+        signal: OptionSignal,
+        portfolio: PortfolioState,
+        now: pd.Timestamp | None = None,
+    ) -> OptionRiskDecision:
+        """Absolute veto over an options trade - the options counterpart to
+        validate_signal. An option's max loss is simply the premium paid (no
+        stop-distance-based sizing like stocks), so this caps *premium at
+        risk* against portfolio limits instead of share notional.
+
+        Runs: circuit breakers (same P&L-based checks as validate_signal,
+        independent of any options-specific state), duplicate-order block,
+        max daily trades, max concurrent option positions, then caps total
+        premium at risk (this trade + existing option positions) at
+        max_exposure * equity, and halves contracts if the circuit breaker
+        is in REDUCE state.
+        """
+        now = now if now is not None else pd.Timestamp.now(tz="UTC")
+
+        breaker_status = self.circuit_breaker.update(portfolio)
+        if self.circuit_breaker.is_halted():
+            return self._reject_option(f"circuit breaker active: {breaker_status.value} - all trading halted")
+
+        if self._is_duplicate(signal.symbol, signal.right.value, now):
+            return self._reject_option(
+                f"duplicate order for {signal.symbol} {signal.right.value} within {self.duplicate_window_seconds:.0f}s"
+            )
+
+        if portfolio.trades_today >= self.max_daily_trades:
+            return self._reject_option(f"max daily trades ({self.max_daily_trades}) reached")
+
+        option_positions = {
+            sym: pos for sym, pos in portfolio.positions.items() if sym != signal.occ_symbol and pos.asset_class == "us_option"
+        }
+        if len(option_positions) >= self.max_concurrent:
+            return self._reject_option(f"max concurrent option positions ({self.max_concurrent}) reached")
+
+        contracts = signal.contracts
+        modifications: list[str] = []
+
+        existing_premium_at_risk = sum(abs(pos.quantity) * pos.avg_entry_price * 100 for pos in option_positions.values())
+        premium_cap = self.max_exposure * portfolio.equity
+        headroom = premium_cap - existing_premium_at_risk
+        if headroom <= 0:
+            return self._reject_option(f"portfolio already at or above {self.max_exposure:.0%} max premium-at-risk cap")
+
+        new_premium = contracts * signal.limit_price * 100
+        if new_premium > headroom:
+            contracts = int(headroom / (signal.limit_price * 100))
+            if contracts < 1:
+                return self._reject_option(f"sized position exceeds {self.max_exposure:.0%} max premium-at-risk cap")
+            modifications.append(f"contracts reduced to {contracts} to fit {self.max_exposure:.0%} max premium-at-risk cap")
+
+        size_mult = self.circuit_breaker.size_multiplier()
+        if size_mult < 1.0:
+            contracts = int(contracts * size_mult)
+            if contracts < 1:
+                return self._reject_option(f"circuit breaker {breaker_status.value} active - size reduced to zero contracts")
+            modifications.append(f"circuit breaker {breaker_status.value} active: contracts x{size_mult}")
+
+        notional = contracts * signal.limit_price * 100
+        if notional < self.min_position_dollars:
+            return self._reject_option(f"sized position (${notional:,.2f}) below minimum (${self.min_position_dollars:,.2f})")
+        if notional > portfolio.buying_power:
+            return self._reject_option(f"required premium (${notional:,.2f}) exceeds buying power (${portfolio.buying_power:,.2f})")
+
+        self._record_order(signal.symbol, signal.right.value, now)
+
+        modified = replace(signal, contracts=contracts)
+        return OptionRiskDecision(approved=True, modified_signal=modified, rejection_reason=None, modifications=modifications)
+
+    def _reject_option(self, reason: str) -> OptionRiskDecision:
+        logger.warning("Option signal rejected: %s", reason)
+        return OptionRiskDecision(approved=False, modified_signal=None, rejection_reason=reason, modifications=[])

@@ -50,6 +50,39 @@ strategy:
   uncertainty_size_mult: 0.50         # Position size multiplier applied when regime confidence is low
 
 # ------------------------------------------------------------------------------
+# Technical indicator confluence (core.indicator_signals) - drives the
+# options strategy's entry/exit direction. Same indicators TradingView charts
+# are built around, computed directly from the bars this bot already pulls.
+# ------------------------------------------------------------------------------
+indicators:
+  rsi_period: 14                  # RSI lookback
+  rsi_oversold: 30.0              # RSI below this is a bullish (bounce) vote
+  rsi_overbought: 70.0            # RSI above this is a bearish vote
+  macd_fast: 12                   # MACD fast EMA period
+  macd_slow: 26                   # MACD slow EMA period
+  macd_signal: 9                  # MACD signal line EMA period
+  sma_fast: 20                    # Fast SMA period for the crossover vote
+  sma_slow: 50                    # Slow SMA period for the crossover vote
+  bb_period: 20                   # Bollinger Band period
+  bb_std: 2.0                     # Bollinger Band width, in standard deviations
+  min_confluence: 3               # Indicators (out of 4) that must agree to fire a signal
+  min_bars: 60                    # Minimum history required before computing indicators
+
+# ------------------------------------------------------------------------------
+# Options strategy (core.options_strategy) - directional calls/puts only,
+# sized by defined premium risk. Requires options trading enabled/approved
+# on your Alpaca account.
+# ------------------------------------------------------------------------------
+options_strategy:
+  target_delta: 0.35              # Preferred absolute delta of the selected contract
+  min_days_to_expiration: 21      # Don't buy contracts expiring sooner than this (theta decay)
+  max_days_to_expiration: 45      # Don't buy contracts expiring later than this (diluted leverage)
+  max_risk_per_trade: 0.02        # Max fraction of equity risked (premium paid) on a single trade
+  stop_loss_pct: 0.50             # Exit if premium drops this fraction from entry
+  take_profit_pct: 1.00           # Exit if premium rises this fraction from entry
+  min_confidence: 0.75            # Minimum indicator confluence confidence required to act
+
+# ------------------------------------------------------------------------------
 # Risk management
 # ------------------------------------------------------------------------------
 risk:

@@ -83,13 +83,22 @@ options_strategy:
   min_confidence: 0.75            # Minimum indicator confluence confidence required to act
 
 # ------------------------------------------------------------------------------
-# Support/resistance strategy (core.support_resistance + core.sr_strategy) -
-# the primary strategy: detects support/resistance zones from swing pivots
-# and only trades a bounce/rejection off one when volume, VWAP, RSI, and
-# MACD all confirm it (min_required_confirmations below). Works on whatever
-# bar timeframe you feed it - set broker.timeframe to intraday bars (e.g.
-# 5Min) for day trading or 1Day for swing trading; the strategy adapts its
-# VWAP calculation automatically (see core/sr_strategy.py).
+# Support/resistance strategy (core.support_resistance + core.market_structure
+# + core.key_levels + core.sr_strategy) - the primary strategy: detects
+# support/resistance zones (pivot-clustered, plus previous-day/pre-market
+# highs-lows and order blocks) and only trades a bounce/rejection off one
+# when volume, VWAP, RSI, MACD, and the entry timeframe's own market
+# structure (a BOS or MSS event in the trade's favor - see
+# core/market_structure.py) all confirm it. Works on whatever bar timeframe
+# you feed it - set broker.timeframe to intraday bars (e.g. 5Min) for day
+# trading or 1Day for swing trading; the strategy adapts its VWAP
+# calculation automatically (see core/sr_strategy.py).
+#
+# Higher-timeframe bias (require_htf_bias) only takes effect when the
+# caller passes a higher timeframe's bars into generate()/run() - this repo
+# doesn't yet fetch a second timeframe automatically (see main.py wiring,
+# still pending). Suggested pairings once that's wired up: 1H bias / 5Min
+# entries for day trading, 1Day bias / 1H entries for swing trading.
 # ------------------------------------------------------------------------------
 sr_strategy:
   pivot_window: 5                 # Bars on each side a swing high/low must beat to count as a pivot
@@ -109,6 +118,15 @@ sr_strategy:
   min_required_confirmations: 4   # How many of {volume, vwap, rsi, macd} must pass (out of 4)
   risk_reward_ratio: 2.0          # Target distance from entry, as a multiple of the stop distance
   min_bars: 60                    # Minimum bars of history required before evaluating a setup
+  use_key_levels: true            # Merge previous-day/pre-market highs-lows + order blocks into levels
+  premarket_open_time: "09:30"    # Market open time (local to your bars' timestamps) for key levels
+  order_block_lookback: 3         # Bars scanned backward for the opposite candle before a displacement
+  order_block_displacement_atr_mult: 1.5   # Displacement bar must be this many ATRs wide to count
+  order_block_atr_period: 14      # ATR lookback used to size what counts as a "displacement" bar
+  require_market_structure: true  # Require a BOS/MSS event in the trade's favor at the level
+  structure_pivot_window: 5       # Pivot window for the entry-timeframe market structure analyzer
+  require_htf_bias: true          # Veto longs when the higher timeframe (if provided) is downtrending, and vice versa
+  htf_pivot_window: 5             # Pivot window for the higher-timeframe bias analyzer
 
 # ------------------------------------------------------------------------------
 # Risk management

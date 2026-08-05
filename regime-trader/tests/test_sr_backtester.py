@@ -39,6 +39,13 @@ def _default_strategy(min_required_confirmations: int = 3) -> SupportResistanceS
         min_required_confirmations=min_required_confirmations,
         risk_reward_ratio=2.0,
         min_bars=60,
+        # This backtester's own tests are about fills/sizing/bookkeeping,
+        # not the strategy's gates (those are covered directly in
+        # tests/test_sr_strategy.py) - disabled here so a synthetic
+        # oscillating series without genuine BOS/MSS structure still
+        # produces trades to exercise the backtester mechanics with.
+        require_market_structure=False,
+        use_key_levels=False,
     )
 
 
@@ -99,6 +106,7 @@ def test_stop_loss_produces_a_bounded_negative_pnl_trade() -> None:
         pivot_window=5, cluster_tolerance_pct=0.01, min_touches=2, level_proximity_pct=0.01,
         volume_window=20, volume_multiple=1.2, vwap_window=5, rsi_period=14, rsi_oversold=34.0,
         rsi_overbought=70.0, min_required_confirmations=4, min_bars=60,
+        require_market_structure=False, use_key_levels=False,
     )
     bt = SRBacktester(strategy, risk_per_trade=0.01, max_position_pct=0.2, initial_cash=100_000.0)
     result = bt.run("TEST", bars)
@@ -127,6 +135,40 @@ def test_summary_matches_trades_frame_for_a_simple_win_loss_pair() -> None:
         assert summary["total_pnl"] == frame["pnl"].sum()
         wins = (frame["pnl"] > 0).sum()
         assert summary["win_rate"] == wins / len(frame)
+
+
+def test_htf_bars_veto_suppresses_trades_the_ltf_alone_would_take() -> None:
+    """Passing htf_bars with require_htf_bias on must reduce (not increase)
+    the trades taken vs. the same run without htf_bars, when the higher
+    timeframe is persistently in a downtrend (which vetoes every long)."""
+    bars = _oscillating_bars()
+    baseline_strategy = _default_strategy()
+    baseline = SRBacktester(baseline_strategy, initial_cash=100_000.0).run("TEST", bars)
+    baseline_longs = [t for t in baseline.trades if t.exit_time is not None and t.direction.value == "long"]
+    assert len(baseline_longs) > 0  # sanity: the baseline does take longs
+
+    htf_strategy = SupportResistanceStrategy(
+        pivot_window=5, cluster_tolerance_pct=0.01, min_touches=2, level_proximity_pct=0.015,
+        volume_window=20, volume_multiple=1.1, vwap_window=10, rsi_period=14, rsi_oversold=35.0,
+        rsi_overbought=65.0, min_required_confirmations=3, min_bars=60,
+        require_market_structure=False, use_key_levels=False, require_htf_bias=True, htf_pivot_window=5,
+    )
+    # A persistently declining higher timeframe (lower highs + lower lows,
+    # so pivot-based trend classification actually reads DOWNTREND - a pure
+    # straight line has no swings to classify at all) - should veto every long.
+    n = len(bars)
+    rng = np.random.default_rng(11)
+    t = np.arange(n)
+    period = 30
+    htf_close = 150 - 0.15 * t + 15 * (1 - 4 * np.abs(((t / period) % 1) - 0.5)) + rng.normal(0, 0.3, n)
+    htf_close = pd.Series(htf_close, index=bars.index)
+    htf_bars = pd.DataFrame(
+        {"open": htf_close, "high": htf_close + 0.5, "low": htf_close - 0.5, "close": htf_close}, index=bars.index
+    )
+
+    result = SRBacktester(htf_strategy, initial_cash=100_000.0).run("TEST", bars, htf_bars=htf_bars)
+    htf_longs = [t for t in result.trades if t.exit_time is not None and t.direction.value == "long"]
+    assert len(htf_longs) < len(baseline_longs)
 
 
 def test_run_with_no_trades_returns_empty_but_valid_result() -> None:

@@ -24,13 +24,14 @@ import pandas as pd
 
 @dataclass
 class Level:
-    """A clustered support or resistance zone."""
+    """A support or resistance zone."""
 
     price: float
     kind: str  # "support" or "resistance"
     touches: int
     first_touch: pd.Timestamp
     last_touch: pd.Timestamp
+    source: str = "pivot"  # "pivot" (this module), "prev_day", "premarket", "order_block" (core.key_levels)
 
 
 def find_pivot_highs(high: pd.Series, window: int) -> pd.Series:

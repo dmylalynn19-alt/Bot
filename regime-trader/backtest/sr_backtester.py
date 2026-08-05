@@ -160,7 +160,14 @@ class SRBacktester:
         self.slippage = slippage
         self.min_position_shares = min_position_shares
 
-    def run(self, symbol: str, bars: pd.DataFrame, start: str | None = None, end: str | None = None) -> SRBacktestResult:
+    def run(
+        self,
+        symbol: str,
+        bars: pd.DataFrame,
+        start: str | None = None,
+        end: str | None = None,
+        htf_bars: pd.DataFrame | None = None,
+    ) -> SRBacktestResult:
         """Run the backtest over `bars` (single-symbol OHLCV, sorted by time).
 
         Args:
@@ -172,6 +179,15 @@ class SRBacktester:
             start: First bar eligible to be evaluated for entry. Defaults to
                 the first bar with enough warm-up history.
             end: Last bar to evaluate. Defaults to the end of `bars`.
+            htf_bars: Optional higher-timeframe OHLCV history of the same
+                symbol, for the strategy's `require_htf_bias` gate. At each
+                entry-timeframe bar `ts`, the strategy only ever sees
+                `htf_bars.loc[:ts]` - the higher-timeframe bar that was
+                actually the most recent *closed* one as of `ts`, never a
+                still-forming or future one. This assumes `htf_bars`' index
+                is timestamped the same way `bars`' is (bar close/start
+                time, consistently) - the same assumption the rest of this
+                backtester already makes about `bars` itself.
         """
         bars = bars.sort_index()
         if bars.empty:
@@ -237,7 +253,8 @@ class SRBacktester:
             bars_so_far = bars.loc[:ts]
 
             if open_trade is None:
-                setup = self.strategy.generate(symbol, bars_so_far)
+                htf_bars_so_far = htf_bars.loc[:ts] if htf_bars is not None else None
+                setup = self.strategy.generate(symbol, bars_so_far, htf_bars=htf_bars_so_far)
                 if setup is not None:
                     pending_action = {"kind": "entry", "setup": setup}
             else:

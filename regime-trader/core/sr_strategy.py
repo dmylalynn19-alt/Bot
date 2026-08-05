@@ -19,6 +19,27 @@ votes:
   lags and rarely has fully crossed by the time RSI is at an extreme right
   at the level. Momentum shifting your way is the confirmation.
 
+On top of those four, two more gates (both on by default):
+
+- Market structure: the entry timeframe's own market structure (see
+  core/market_structure.py) must show a BOS or MSS event in the trade's
+  favor right at the level - a bullish event (continuation of an uptrend,
+  or a reversal shift up) for a long, bearish for a short. This is what
+  turns "price happens to be near a level and the indicators agree" into
+  "the market has actually just confirmed a trend/reversal there."
+- Higher-timeframe bias: when `generate()` is given `htf_bars` (a higher
+  timeframe's history of the same symbol), a long is only taken if the
+  higher timeframe isn't in a downtrend, and a short only if it isn't in
+  an uptrend (a ranging higher timeframe doesn't veto either direction -
+  there's no bias to contradict). This is the "higher timeframe for bias,
+  lower timeframe for the entry" pairing - e.g. 1H bias / 5-minute entries
+  for day trading, daily bias / 1H entries for swing trading.
+
+Levels themselves come from two sources, merged into one candidate pool:
+pivot-clustered support/resistance (core/support_resistance.py) and, when
+enabled, "key levels" - previous day's high/low, the pre-market session's
+high/low, and a simplified order-block heuristic (core/key_levels.py).
+
 Works on whatever timeframe `bars` is in - a 5-minute chart for day trading,
 a daily chart for swing trading - the setup is only valid if it's confirmed
 within that same timeframe's own history (see backtest/sr_backtester.py for
@@ -34,7 +55,12 @@ from typing import Any
 import pandas as pd
 import ta
 
+from core.key_levels import latest_key_levels
+from core.market_structure import MarketStructureAnalyzer, StructureEvent, Trend
 from core.support_resistance import Level, SupportResistanceDetector
+
+_BULLISH_STRUCTURE_EVENTS = {StructureEvent.BOS_BULLISH, StructureEvent.MSS_BULLISH}
+_BEARISH_STRUCTURE_EVENTS = {StructureEvent.BOS_BEARISH, StructureEvent.MSS_BEARISH}
 
 
 class TradeDirection(str, Enum):
@@ -129,6 +155,27 @@ class SupportResistanceStrategy:
         risk_reward_ratio: Target distance from entry, as a multiple of the
             stop distance, used when there's no opposing level to target.
         min_bars: Minimum bars of history required before evaluating a setup.
+        use_key_levels: Merge previous-day high/low, pre-market high/low,
+            and order-block zones (core/key_levels.py) into the candidate
+            level pool alongside pivot-clustered support/resistance.
+        premarket_open_time: Market open time (local to `bars`' timestamps,
+            "HH:MM") used to separate the pre-market session for key levels.
+        order_block_lookback / order_block_displacement_atr_mult /
+            order_block_atr_period: Passed to core.key_levels.order_blocks.
+        require_market_structure: Require the entry timeframe's own market
+            structure (core/market_structure.py) to show a BOS or MSS event
+            in the trade's favor at the level - not just the indicator
+            confluence, but confirmation the market has actually broken
+            structure that way.
+        structure_pivot_window: Pivot window used for the entry-timeframe
+            market structure analyzer. Defaults to `pivot_window`.
+        require_htf_bias: When `generate()` is given `htf_bars`, veto a long
+            if the higher timeframe is in a downtrend (and a short if it's
+            in an uptrend). Has no effect if `htf_bars` isn't provided.
+        htf_pivot_window: Pivot window used for the higher-timeframe bias
+            analyzer (independent of the entry timeframe's own pivot_window,
+            since higher-timeframe swings are usually meant to be read on a
+            slower cadence).
     """
 
     def __init__(
@@ -149,6 +196,15 @@ class SupportResistanceStrategy:
         min_required_confirmations: int = 4,
         risk_reward_ratio: float = 2.0,
         min_bars: int = 60,
+        use_key_levels: bool = True,
+        premarket_open_time: str = "09:30",
+        order_block_lookback: int = 3,
+        order_block_displacement_atr_mult: float = 1.5,
+        order_block_atr_period: int = 14,
+        require_market_structure: bool = True,
+        structure_pivot_window: int | None = None,
+        require_htf_bias: bool = True,
+        htf_pivot_window: int = 5,
     ) -> None:
         self.detector = SupportResistanceDetector(pivot_window, cluster_tolerance_pct, min_touches)
         self.level_proximity_pct = level_proximity_pct
@@ -164,45 +220,86 @@ class SupportResistanceStrategy:
         self.min_required_confirmations = min_required_confirmations
         self.risk_reward_ratio = risk_reward_ratio
         self.min_bars = min_bars
+        self.use_key_levels = use_key_levels
+        self.premarket_open_time = premarket_open_time
+        self.order_block_lookback = order_block_lookback
+        self.order_block_displacement_atr_mult = order_block_displacement_atr_mult
+        self.order_block_atr_period = order_block_atr_period
+        self.require_market_structure = require_market_structure
+        self.structure_analyzer = MarketStructureAnalyzer(structure_pivot_window or pivot_window)
+        self.require_htf_bias = require_htf_bias
+        self.htf_structure_analyzer = MarketStructureAnalyzer(htf_pivot_window)
 
-    def generate(self, symbol: str, bars: pd.DataFrame) -> TradeSetup | None:
+    def generate(self, symbol: str, bars: pd.DataFrame, htf_bars: pd.DataFrame | None = None) -> TradeSetup | None:
         """Evaluate `bars` (OHLCV, most recent bar last, this timeframe's own
         history) for a confirmed support/resistance setup.
 
-        Returns None if there's no history, no nearby level, or too few
-        confirmations pass. If both a long-at-support and a short-at-
-        resistance setup pass at once (price sitting between two close
-        levels), the higher-confidence one wins.
+        Args:
+            symbol: Instrument label.
+            bars: The entry timeframe's own OHLCV history.
+            htf_bars: Optional higher-timeframe OHLCV history of the same
+                symbol, used for the `require_htf_bias` gate. Omit to skip
+                the higher-timeframe check entirely (single-timeframe mode).
+
+        Returns None if there's no history, no nearby level, higher-
+        timeframe bias vetoes both directions, or too few confirmations
+        pass. If both a long-at-support and a short-at-resistance setup
+        pass at once (price sitting between two close levels), the higher-
+        confidence one wins.
         """
         if len(bars) < self.min_bars:
             return None
 
-        levels = self.detector.detect(bars)
+        levels = list(self.detector.detect(bars))
+        if self.use_key_levels:
+            levels += latest_key_levels(
+                bars,
+                self.premarket_open_time,
+                self.order_block_lookback,
+                self.order_block_displacement_atr_mult,
+                self.order_block_atr_period,
+            )
         if not levels:
             return None
+
+        htf_trend: Trend | None = None
+        if htf_bars is not None and self.require_htf_bias:
+            htf_trend = self.htf_structure_analyzer.analyze(htf_bars).trend
 
         price = float(bars["close"].iloc[-1])
         support = self.detector.nearest_support(levels, price)
         resistance = self.detector.nearest_resistance(levels, price)
 
         candidates = []
-        if support is not None:
-            long_setup = self._evaluate(symbol, bars, price, support, TradeDirection.LONG)
+        if support is not None and htf_trend != Trend.DOWNTREND:
+            long_setup = self._evaluate(symbol, bars, price, support, TradeDirection.LONG, htf_trend)
             if long_setup is not None:
                 candidates.append(long_setup)
-        if resistance is not None:
-            short_setup = self._evaluate(symbol, bars, price, resistance, TradeDirection.SHORT)
+        if resistance is not None and htf_trend != Trend.UPTREND:
+            short_setup = self._evaluate(symbol, bars, price, resistance, TradeDirection.SHORT, htf_trend)
             if short_setup is not None:
                 candidates.append(short_setup)
 
         return max(candidates, key=lambda setup: setup.confidence) if candidates else None
 
     def _evaluate(
-        self, symbol: str, bars: pd.DataFrame, price: float, level: Level, direction: TradeDirection
+        self,
+        symbol: str,
+        bars: pd.DataFrame,
+        price: float,
+        level: Level,
+        direction: TradeDirection,
+        htf_trend: Trend | None,
     ) -> TradeSetup | None:
         distance_pct = abs(price - level.price) / level.price
         if distance_pct > self.level_proximity_pct:
             return None
+
+        structure_state = self.structure_analyzer.analyze(bars)
+        if self.require_market_structure:
+            favorable_events = _BULLISH_STRUCTURE_EVENTS if direction == TradeDirection.LONG else _BEARISH_STRUCTURE_EVENTS
+            if structure_state.last_event not in favorable_events:
+                return None
 
         close = bars["close"]
         rsi = float(ta.momentum.RSIIndicator(close, window=self.rsi_period).rsi().iloc[-1])
@@ -259,10 +356,20 @@ class SupportResistanceStrategy:
             confidence=passed / len(confirmations),
             timestamp=bars.index[-1],
             reasoning=(
-                f"{direction.value} at {level.kind} {level.price:.2f} ({level.touches} touches): "
-                f"{passed}/{len(confirmations)} confirmations {confirmations}"
+                f"{direction.value} at {level.kind} {level.price:.2f} ({level.touches} touches, "
+                f"source={level.source}): {passed}/{len(confirmations)} confirmations {confirmations}, "
+                f"structure={structure_state.trend.value}/{structure_state.last_event.value}"
+                + (f", htf_bias={htf_trend.value}" if htf_trend is not None else "")
             ),
-            metadata={"rsi": rsi, "macd_histogram": macd_hist, "vwap": vwap},
+            metadata={
+                "rsi": rsi,
+                "macd_histogram": macd_hist,
+                "vwap": vwap,
+                "level_source": level.source,
+                "market_structure_trend": structure_state.trend.value,
+                "market_structure_event": structure_state.last_event.value,
+                "htf_bias": htf_trend.value if htf_trend is not None else None,
+            },
         )
 
     def should_exit(self, setup: TradeSetup, bars: pd.DataFrame) -> tuple[bool, str]:

@@ -83,6 +83,34 @@ options_strategy:
   min_confidence: 0.75            # Minimum indicator confluence confidence required to act
 
 # ------------------------------------------------------------------------------
+# Support/resistance strategy (core.support_resistance + core.sr_strategy) -
+# the primary strategy: detects support/resistance zones from swing pivots
+# and only trades a bounce/rejection off one when volume, VWAP, RSI, and
+# MACD all confirm it (min_required_confirmations below). Works on whatever
+# bar timeframe you feed it - set broker.timeframe to intraday bars (e.g.
+# 5Min) for day trading or 1Day for swing trading; the strategy adapts its
+# VWAP calculation automatically (see core/sr_strategy.py).
+# ------------------------------------------------------------------------------
+sr_strategy:
+  pivot_window: 5                 # Bars on each side a swing high/low must beat to count as a pivot
+  cluster_tolerance_pct: 0.005    # Pivots within this fractional distance are merged into one zone
+  min_touches: 2                  # Minimum pivots required to keep a support/resistance zone
+  level_proximity_pct: 0.005      # How close price must be to a level to even consider a setup
+  volume_window: 20               # Trailing bars used for the volume baseline
+  volume_multiple: 1.2            # Entry bar's volume must be at least this multiple of the baseline
+  vwap_window: 10                 # Rolling VWAP window (bars) - daily-or-slower timeframes only;
+                                   # intraday timeframes use the standard calendar-day session VWAP
+  rsi_period: 14                  # RSI lookback
+  rsi_oversold: 30.0              # RSI at/below this, near support, confirms a long
+  rsi_overbought: 70.0            # RSI at/above this, near resistance, confirms a short
+  macd_fast: 12                   # MACD fast EMA period
+  macd_slow: 26                   # MACD slow EMA period
+  macd_signal: 9                  # MACD signal line EMA period
+  min_required_confirmations: 4   # How many of {volume, vwap, rsi, macd} must pass (out of 4)
+  risk_reward_ratio: 2.0          # Target distance from entry, as a multiple of the stop distance
+  min_bars: 60                    # Minimum bars of history required before evaluating a setup
+
+# ------------------------------------------------------------------------------
 # Risk management
 # ------------------------------------------------------------------------------
 risk:

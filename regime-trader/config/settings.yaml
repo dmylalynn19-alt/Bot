@@ -129,6 +129,35 @@ sr_strategy:
   htf_pivot_window: 5             # Pivot window for the higher-timeframe bias analyzer
 
 # ------------------------------------------------------------------------------
+# Breakout/momentum strategy (core.consolidation + core.candle_patterns +
+# core.market_structure + core.breakout_strategy) - a second, complementary
+# setup type to sr_strategy: instead of trading a bounce/rejection AT a
+# level, this trades the CONTINUATION through one, after a period of
+# consolidation. Entry is triggered by the three-bar model (lead/reaction/
+# confirmation candles), gated on the lead candle actually being fast
+# (candle_speed relative to ATR), and optionally requiring the live move to
+# be accelerating relative to the trend's recent typical leg (a "last leg"
+# / climax-move filter - off by default since it's a strong extra condition
+# on top of everything else).
+# ------------------------------------------------------------------------------
+breakout_strategy:
+  consolidation_lookback: 20          # Bars defining "the range" once a tight window is found
+  consolidation_max_range_atr_mult: 2.5   # Whole-window high-low spread must be within this many ATRs
+  atr_period: 14                      # ATR lookback used throughout (tightness, candle speed)
+  retest_tolerance_pct: 0.003         # How close price must return to the broken edge to count as a retest
+  max_bars_to_classify: 20            # How many bars after the range to look for breakout/retest/failure
+  consolidation_search_bars: 60       # How far back to search for the most recent qualifying range
+  require_true_breakout: true         # Only trade breakouts that retested the edge and held (vs. any break)
+  three_bar_momentum_multiple: 1.3    # Lead candle's range must be at least this many ATRs (a "fast" bar)
+  three_bar_max_reaction_retrace_pct: 0.75   # Reaction candle can retrace at most this much of the lead's body
+  require_leg_acceleration: false     # Require the live move to be outrunning the trend's recent leg speed
+  acceleration_lookback_legs: 3       # Confirmed legs averaged for the acceleration comparison
+  min_acceleration_ratio: 1.3         # Live leg speed / recent average leg speed must be at least this
+  structure_pivot_window: 5           # Pivot window for the leg/acceleration analysis
+  risk_reward_ratio: 2.0              # Target distance from entry, as a multiple of the stop distance
+  min_bars: 60                        # Minimum bars of history required before evaluating a setup
+
+# ------------------------------------------------------------------------------
 # Risk management
 # ------------------------------------------------------------------------------
 risk:

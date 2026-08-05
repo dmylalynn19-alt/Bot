@@ -5,8 +5,16 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from core.market_structure import MarketStructureAnalyzer, StructureEvent, Trend, detect_swings
+from core.market_structure import (
+    MarketStructureAnalyzer,
+    StructureEvent,
+    Trend,
+    current_leg_acceleration,
+    detect_swings,
+    identify_legs,
+)
 
 
 def _zigzag(anchors: list[float], seg_len: int = 8) -> np.ndarray:
@@ -87,3 +95,48 @@ def test_detect_swings_no_look_ahead() -> None:
     short_confirmed = [(s.kind, round(s.price, 6)) for s in short_swings if s.timestamp <= cutoff]
     long_confirmed_up_to_cutoff = [(s.kind, round(s.price, 6)) for s in long_swings if s.timestamp <= cutoff]
     assert sorted(short_confirmed) == sorted(long_confirmed_up_to_cutoff)
+
+
+def test_identify_legs_computes_speed_between_consecutive_swings() -> None:
+    close = _zigzag([100, 108, 103, 112, 107, 116], seg_len=10)
+    legs = identify_legs(_bars(close), pivot_window=3)
+    assert len(legs) == 3
+    for leg in legs:
+        assert leg.bar_count == 10
+        assert leg.speed == pytest.approx(abs(leg.price_change) / leg.bar_count)
+
+
+def test_current_leg_acceleration_flags_a_fast_final_push() -> None:
+    """A steady uptrend of similar-speed legs, then a much faster, shorter
+    final leg - acceleration ratio should be well above 1."""
+    close = _zigzag([100, 108, 103, 112, 107, 116], seg_len=10)
+    final = np.linspace(116, 130, 4)[1:]  # big move, few bars -> fast
+    close = np.concatenate([close, final])
+    ratio = current_leg_acceleration(_bars(close), pivot_window=3, lookback_legs=3)
+    assert ratio is not None
+    assert ratio > 1.5
+
+
+def test_current_leg_acceleration_none_without_enough_leg_history() -> None:
+    close = _zigzag([100, 108, 103], seg_len=10)  # only one leg
+    ratio = current_leg_acceleration(_bars(close), pivot_window=3, lookback_legs=3)
+    assert ratio is None
+
+
+def test_identify_legs_no_look_ahead() -> None:
+    """A confirmed leg's speed, as of any cutoff, must not depend on bars
+    after that cutoff - same guarantee as the underlying swings."""
+    rng = np.random.default_rng(6)
+    idx = pd.date_range("2024-01-01", periods=250, freq="B")
+    base = 100 + 10 * np.sin(np.linspace(0, 14, 250)) + rng.normal(0, 0.2, 250)
+    close = pd.Series(base, index=idx)
+    bars = pd.DataFrame({"open": close, "high": close + 0.2, "low": close - 0.2, "close": close}, index=idx)
+
+    window = 4
+    short_legs = identify_legs(bars.iloc[:120], window)
+    long_legs = identify_legs(bars.iloc[:250], window)
+    cutoff = bars.index[120 - window]
+
+    short_confirmed = [(round(l.start.price, 6), round(l.end.price, 6)) for l in short_legs if l.end.timestamp <= cutoff]
+    long_confirmed = [(round(l.start.price, 6), round(l.end.price, 6)) for l in long_legs if l.end.timestamp <= cutoff]
+    assert sorted(short_confirmed) == sorted(long_confirmed)

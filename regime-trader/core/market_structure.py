@@ -23,6 +23,13 @@ current bar's own close (never a future bar - see the look-ahead tests):
 Swing pivots reuse core.support_resistance.find_pivot_highs/find_pivot_lows,
 so they inherit the same look-ahead discipline: a pivot is only usable
 `pivot_window` bars after it forms.
+
+A third concept lives here too: trend "legs" (the price move between one
+confirmed swing and the next) and the *current*, still-forming leg's speed
+relative to recent confirmed legs. A trend's final push toward its target is
+typically its fastest - `current_leg_acceleration` gives a ratio (current
+leg speed / recent average leg speed) so callers can flag that condition and
+actually trade it, rather than avoid it.
 """
 
 from __future__ import annotations
@@ -65,6 +72,17 @@ class MarketStructureState:
     last_swing_low: SwingPoint | None
 
 
+@dataclass
+class TrendLeg:
+    """The confirmed price move from one swing point to the next."""
+
+    start: SwingPoint
+    end: SwingPoint
+    bar_count: int
+    price_change: float
+    speed: float  # abs(price_change) / bar_count
+
+
 def detect_swings(bars: pd.DataFrame, pivot_window: int = 5) -> list[SwingPoint]:
     """Confirmed swing highs/lows in `bars`, in time order.
 
@@ -86,6 +104,59 @@ def detect_swings(bars: pd.DataFrame, pivot_window: int = 5) -> list[SwingPoint]
     swings += [SwingPoint(price=float(price), kind="low", timestamp=ts) for ts, price in lows.items()]
     swings.sort(key=lambda s: s.timestamp)
     return swings
+
+
+def identify_legs(bars: pd.DataFrame, pivot_window: int = 5) -> list[TrendLeg]:
+    """Confirmed trend legs: the move from each swing point to the next,
+    in time order (regardless of whether both ends are the same kind of
+    swing - consecutive pivots normally alternate high/low, but this
+    doesn't assume it).
+    """
+    swings = detect_swings(bars, pivot_window)
+    if len(swings) < 2:
+        return []
+
+    legs = []
+    for start, end in zip(swings[:-1], swings[1:]):
+        bar_count = bars.index.get_loc(end.timestamp) - bars.index.get_loc(start.timestamp)
+        if bar_count <= 0:
+            continue
+        price_change = end.price - start.price
+        legs.append(TrendLeg(start=start, end=end, bar_count=bar_count, price_change=price_change, speed=abs(price_change) / bar_count))
+    return legs
+
+
+def current_leg_acceleration(bars: pd.DataFrame, pivot_window: int = 5, lookback_legs: int = 3) -> float | None:
+    """Ratio of the CURRENT, still-forming leg's speed (from the last
+    confirmed swing to `bars`' last close) to the average speed of the last
+    `lookback_legs` confirmed legs.
+
+    A ratio well above 1 means the live move is outrunning the trend's
+    recent typical leg - the classic signature of a trend's final,
+    accelerating push toward its target (the "last leg" - the video notes
+    call this the fastest, and best, move to be trading, not one to avoid).
+
+    Returns None when there isn't enough leg history to compare against
+    (fewer than `lookback_legs` confirmed legs), or the reference average
+    speed is zero.
+    """
+    swings = detect_swings(bars, pivot_window)
+    legs = identify_legs(bars, pivot_window)
+    if not swings or len(legs) < lookback_legs:
+        return None
+
+    recent_legs = legs[-lookback_legs:]
+    avg_speed = sum(leg.speed for leg in recent_legs) / len(recent_legs)
+    if avg_speed <= 0:
+        return None
+
+    last_swing = swings[-1]
+    bar_count = (len(bars) - 1) - bars.index.get_loc(last_swing.timestamp)
+    if bar_count <= 0:
+        return None
+
+    current_speed = abs(float(bars["close"].iloc[-1]) - last_swing.price) / bar_count
+    return current_speed / avg_speed
 
 
 class MarketStructureAnalyzer:

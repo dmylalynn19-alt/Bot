@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
-from broker.alpaca_client import AlpacaClient
 from core.options_strategy import OptionSignal
 from core.regime_strategies import Signal
+
+if TYPE_CHECKING:
+    from broker.base import BrokerClient
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +64,12 @@ class OrderExecutor:
     """Places, modifies, and cancels orders against the broker.
 
     Args:
-        client: Configured Alpaca client used to submit orders.
+        client: Any broker satisfying broker.base.BrokerClient (currently
+            AlpacaClient or SchwabAdapter-wrapped SchwabClient) - this class
+            never branches on which one it's holding.
     """
 
-    def __init__(self, client: AlpacaClient) -> None:
+    def __init__(self, client: "BrokerClient") -> None:
         self.client = client
 
     def execute_signal(self, signal: Signal, current_quantity: float, equity: float) -> Order | None:
@@ -86,7 +91,9 @@ class OrderExecutor:
 
         side = "buy" if delta > 0 else "sell"
         logger.info("%s: submitting %s %d shares (target=%d, current=%d)", signal.symbol, side, abs(delta), target_shares, current_quantity)
-        raw_order = self.client.submit_order(symbol=signal.symbol, qty=abs(delta), side=side, order_type="market", time_in_force="day")
+        raw_order = self.client.submit_order(
+            symbol=signal.symbol, qty=abs(delta), side=side, asset_class="equity", order_type="market", time_in_force="day"
+        )
         return _to_order(raw_order)
 
     def execute_option_signal(self, signal: OptionSignal) -> Order | None:
@@ -100,10 +107,12 @@ class OrderExecutor:
         if signal.contracts < 1:
             return None
         logger.info(
-            "%s: submitting buy %d contracts of %s @ $%.2f limit", signal.symbol, signal.contracts, signal.occ_symbol, signal.limit_price
+            "%s: submitting buy-to-open %d contracts of %s @ $%.2f limit",
+            signal.symbol, signal.contracts, signal.occ_symbol, signal.limit_price,
         )
         raw_order = self.client.submit_order(
-            symbol=signal.occ_symbol, qty=signal.contracts, side="buy", order_type="limit", time_in_force="day", limit_price=signal.limit_price
+            symbol=signal.occ_symbol, qty=signal.contracts, side="buy_to_open", asset_class="option",
+            order_type="limit", time_in_force="day", limit_price=signal.limit_price,
         )
         return _to_order(raw_order)
 
@@ -112,7 +121,9 @@ class OrderExecutor:
         if contracts <= 0:
             return None
         logger.info("%s: closing %d contracts (%s)", occ_symbol, contracts, reason or "no reason given")
-        raw_order = self.client.submit_order(symbol=occ_symbol, qty=contracts, side="sell", order_type="market", time_in_force="day")
+        raw_order = self.client.submit_order(
+            symbol=occ_symbol, qty=contracts, side="sell_to_close", asset_class="option", order_type="market", time_in_force="day"
+        )
         return _to_order(raw_order)
 
     def cancel_order(self, order_id: str) -> bool:

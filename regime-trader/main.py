@@ -7,7 +7,8 @@
     python main.py run                            # options strategy, daily at 09:35
     python main.py run --once --strategy regime   # HMM/regime strategy instead
 
-Two independent live/paper strategies share one Alpaca connection and one
+Two independent live/paper strategies share one broker connection (Alpaca
+or Schwab - see config `broker.provider` / broker/factory.py) and one
 RiskManager:
 
 - "options" (default): core.indicator_signals.IndicatorSignalGenerator reads
@@ -40,27 +41,19 @@ from datetime import datetime, timezone
 
 import yaml
 
+from broker.factory import build_broker_client
+
 logger = logging.getLogger(__name__)
 
 
 def load_config(path: str = "config/settings.yaml") -> dict:
-    """Load settings.yaml and merge in Alpaca credentials from the environment (.env)."""
+    """Load settings.yaml and merge in broker credentials from the environment (.env)."""
     from dotenv import load_dotenv
 
     load_dotenv()
     with open(path) as fh:
         config = yaml.safe_load(fh)
     return config
-
-
-def _build_alpaca_client():
-    from broker.alpaca_client import AlpacaClient
-
-    return AlpacaClient(
-        api_key=os.environ.get("ALPACA_API_KEY", ""),
-        secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
-        paper=os.environ.get("ALPACA_PAPER", "true").lower() == "true",
-    )
 
 
 def build_pipeline(config: dict) -> dict:
@@ -88,7 +81,7 @@ def build_regime_pipeline(config: dict) -> dict:
     hmm_config = config["hmm"]
     strategy_config = config["strategy"]
 
-    client = _build_alpaca_client()
+    client = build_broker_client(config)
     feed = MarketDataFeed(client=client, symbols=broker_cfg["symbols"], timeframe=broker_cfg["timeframe"])
     risk_manager = RiskManager(**config["risk"])
     order_executor = OrderExecutor(client)
@@ -219,7 +212,7 @@ def build_options_pipeline(config: dict) -> dict:
     from data.market_data import MarketDataFeed
 
     broker_cfg = config["broker"]
-    client = _build_alpaca_client()
+    client = build_broker_client(config)
 
     return {
         "client": client,
@@ -410,7 +403,7 @@ def run_backtest(args: argparse.Namespace, config: dict) -> None:
     from core.risk_manager import RiskManager
 
     broker_cfg = config["broker"]
-    client = _build_alpaca_client()
+    client = build_broker_client(config)
     feed = MarketDataFeed(client=client, symbols=args.symbols, timeframe=broker_cfg["timeframe"])
 
     hmm_config = config["hmm"]

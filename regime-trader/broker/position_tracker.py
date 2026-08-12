@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from broker.alpaca_client import AlpacaClient
+if TYPE_CHECKING:
+    from broker.base import BrokerClient
 
 _DEFAULT_STATE_FILE = "peak_equity.json"
 
@@ -38,15 +40,16 @@ class PositionTracker:
     """Tracks open positions and portfolio-level P&L.
 
     Args:
-        client: Configured Alpaca client used to fetch position/account state.
+        client: Any broker satisfying broker.base.BrokerClient - used to
+            fetch position/account state.
         state_file: Where the observed all-time equity peak is persisted
-            across runs (Alpaca's API doesn't track this for you) - used by
-            get_drawdown_from_peak. Feed the same value into
+            across runs (neither broker's API tracks this for you) - used
+            by get_drawdown_from_peak. Feed the same value into
             core.risk_manager.PortfolioState.peak_equity for the circuit
             breaker to see the same number.
     """
 
-    def __init__(self, client: AlpacaClient, state_file: str = _DEFAULT_STATE_FILE) -> None:
+    def __init__(self, client: "BrokerClient", state_file: str = _DEFAULT_STATE_FILE) -> None:
         self.client = client
         self._state_path = Path(state_file)
 

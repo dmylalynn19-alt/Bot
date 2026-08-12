@@ -170,16 +170,27 @@ class AlpacaClient:
         symbol: str,
         qty: float,
         side: str,
+        asset_class: str = "equity",
         order_type: str = "market",
         time_in_force: str = "day",
         limit_price: float | None = None,
         stop_price: float | None = None,
         client_order_id: str | None = None,
     ) -> dict:
-        """Submit an order. `side` is "buy" or "sell"; `symbol` may be an
-        equity ticker or an OCC option symbol (from get_option_chain)."""
+        """Submit an order. `symbol` may be an equity ticker or an OCC
+        option symbol (from get_option_chain) - Alpaca routes on the symbol
+        format itself, so `asset_class` is accepted only for interface
+        parity with broker.base.BrokerClient (e.g. SchwabAdapter, which
+        does need it) and otherwise ignored here.
+
+        `side` accepts both Alpaca's plain "buy"/"sell" and the open/close
+        vocabulary broker.order_executor.OrderExecutor uses for options
+        ("buy_to_open", "sell_to_close", "sell_to_open", "buy_to_close") -
+        Alpaca itself doesn't distinguish open/close for a simple long-only
+        single-leg order, so these all collapse to plain buy/sell here.
+        """
         tif = _TIME_IN_FORCE_MAP.get(time_in_force, TimeInForce.DAY)
-        order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+        order_side = OrderSide.BUY if side in ("buy", "buy_to_open", "buy_to_close") else OrderSide.SELL
         if order_type == "limit":
             request = LimitOrderRequest(
                 symbol=symbol, qty=qty, side=order_side, time_in_force=tif, limit_price=limit_price, client_order_id=client_order_id

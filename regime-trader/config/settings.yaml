@@ -10,7 +10,12 @@
 # Broker connectivity and universe
 # ------------------------------------------------------------------------------
 broker:
-  paper_trading: true          # true = use Alpaca paper endpoint, false = live trading
+  provider: alpaca              # Which broker executes trades: "alpaca" or "schwab" (see broker/factory.py).
+                                 # Credentials always come from the environment (.env), never here.
+                                 # Webull is not an execution option - see broker/schwab_client.py's
+                                 # module docstring and README for why.
+  paper_trading: true          # true = use Alpaca paper endpoint, false = live trading (Alpaca only -
+                                # Schwab has no separate paper endpoint; use a Schwab paperMoney account instead)
   symbols:                     # Universe of tickers the strategy trades
     - SPY
     - QQQ

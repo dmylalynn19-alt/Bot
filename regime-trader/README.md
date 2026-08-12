@@ -41,6 +41,12 @@ before anything is ever submitted to the broker.
 direction, size, stop/target, reasoning) and asks for a y/N confirmation
 before submitting, instead of executing immediately.
 
+**Emergency exit:** `python main.py close --symbol AAPL` (or `--all`)
+flattens a position with a single market order right now - no waiting for
+the next scheduled check, no strategy exit logic, no confirmation prompt.
+Works for stock or option positions, long or short, regardless of which
+strategy (or none) opened it.
+
 **Broker:** set `broker.provider` in `config/settings.yaml` to `alpaca`
 (default) or `schwab` - see broker/factory.py. Webull is data-only, not a
 trading option here: its official API does not support order placement for
@@ -185,6 +191,10 @@ python main.py run --once --strategy regime
 
 # Any strategy, asking for confirmation before every trade instead of executing automatically
 python main.py run --once --strategy sr --mode manual
+
+# Emergency exit - flatten one position, or everything, right now
+python main.py close --symbol AAPL
+python main.py close --all
 ```
 
 ## Testing

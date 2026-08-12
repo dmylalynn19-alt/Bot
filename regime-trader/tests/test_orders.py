@@ -28,6 +28,7 @@ class FakeBrokerClient:
         self.canceled_order_ids: list[str] = []
         self.next_order_id = 1
         self.raise_on_cancel = False
+        self.positions: dict[str, dict] = {}
 
     def submit_order(self, **kwargs) -> dict:
         self.submitted_orders.append(kwargs)
@@ -45,6 +46,9 @@ class FakeBrokerClient:
 
     def replace_order(self, order_id: str, **kwargs) -> dict:
         return {"id": order_id, "symbol": "AAPL", "qty": kwargs.get("qty", 10), "side": "buy", "status": "accepted"}
+
+    def get_position(self, symbol: str) -> dict | None:
+        return self.positions.get(symbol)
 
 
 def _stock_signal(symbol: str = "AAPL", entry_price: float = 100.0, position_size_pct: float = 0.5, leverage: float = 1.0) -> Signal:
@@ -225,3 +229,58 @@ def test_get_order_status_reflects_broker_state() -> None:
     client = FakeBrokerClient()
     executor = OrderExecutor(client)
     assert executor.get_order_status("1") == OrderStatus.FILLED
+
+
+def test_close_position_returns_none_with_no_open_position() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+    assert executor.close_position("AAPL") is None
+    assert client.submitted_orders == []
+
+
+def test_close_position_sells_a_long_stock_position() -> None:
+    client = FakeBrokerClient()
+    client.positions["AAPL"] = {"symbol": "AAPL", "qty": 10, "asset_class": "us_equity"}
+    executor = OrderExecutor(client)
+
+    order = executor.close_position("AAPL")
+
+    assert order is not None
+    call = client.submitted_orders[0]
+    assert call["side"] == "sell"
+    assert call["qty"] == 10
+    assert call["asset_class"] == "equity"
+
+
+def test_close_position_buys_to_cover_a_short_stock_position() -> None:
+    client = FakeBrokerClient()
+    client.positions["AAPL"] = {"symbol": "AAPL", "qty": -10, "asset_class": "us_equity"}
+    executor = OrderExecutor(client)
+
+    order = executor.close_position("AAPL")
+
+    call = client.submitted_orders[0]
+    assert call["side"] == "buy"
+    assert call["qty"] == 10
+
+
+def test_close_position_sells_to_close_a_long_option_position() -> None:
+    client = FakeBrokerClient()
+    occ = "AAPL  240621C00160000"
+    client.positions[occ] = {"symbol": occ, "qty": 2, "asset_class": "us_option"}
+    executor = OrderExecutor(client)
+
+    order = executor.close_position(occ)
+
+    call = client.submitted_orders[0]
+    assert call["side"] == "sell_to_close"
+    assert call["asset_class"] == "option"
+    assert call["qty"] == 2
+
+
+def test_close_position_does_nothing_for_zero_quantity() -> None:
+    client = FakeBrokerClient()
+    client.positions["AAPL"] = {"symbol": "AAPL", "qty": 0, "asset_class": "us_equity"}
+    executor = OrderExecutor(client)
+    assert executor.close_position("AAPL") is None
+    assert client.submitted_orders == []

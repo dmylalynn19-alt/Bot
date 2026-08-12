@@ -810,7 +810,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    close_parser = subparsers.add_parser(
+        "close", help="Emergency manual close - flatten a position (stock or option) right now, no strategy/schedule involved"
+    )
+    close_target = close_parser.add_mutually_exclusive_group(required=True)
+    close_target.add_argument("--symbol", help="Symbol to close (stock ticker, or OCC/OSI option symbol)")
+    close_target.add_argument("--all", action="store_true", help="Close every currently open position")
+
     return parser.parse_args(argv)
+
+
+def run_close(args: argparse.Namespace, config: dict) -> None:
+    """Emergency manual close: flatten `args.symbol` (or every open
+    position, if `args.all`) with a single market order each, right now -
+    doesn't wait for a scheduled pass, doesn't ask for confirmation (that's
+    the point - this is the "get out in 5 minutes if I have to" command),
+    and doesn't need to know which strategy (if any) opened the position.
+    Also clears any saved sr/breakout TradeSetup state for the symbol(s)
+    closed, so a stale setup doesn't linger and confuse the next scheduled
+    run once the position is actually gone.
+    """
+    from broker.order_executor import OrderExecutor
+    from broker.setup_state import TradeSetupStore
+
+    client = build_broker_client(config)
+    executor = OrderExecutor(client)
+    sr_store = TradeSetupStore(config.get("sr_state_file", "sr_open_setups.json"))
+    breakout_store = TradeSetupStore(config.get("breakout_state_file", "breakout_open_setups.json"))
+
+    if args.all:
+        symbols = [p["symbol"] for p in client.list_positions()]
+        if not symbols:
+            print("No open positions.")
+            return
+    else:
+        symbols = [args.symbol]
+
+    for symbol in symbols:
+        order = executor.close_position(symbol)
+        sr_store.clear(symbol)
+        breakout_store.clear(symbol)
+        if order is not None:
+            print(f"{symbol}: submitted {order.side} order for {order.quantity} (status: {order.status.value})")
+        else:
+            print(f"{symbol}: nothing to close")
 
 
 def main() -> None:
@@ -826,6 +869,8 @@ def main() -> None:
         run_backtest(args, config)
     elif args.command == "run":
         run(config, once=args.once, strategy=args.strategy, mode=args.mode, interval_minutes=args.interval_minutes)
+    elif args.command == "close":
+        run_close(args, config)
     else:
         run(config)
 

@@ -170,6 +170,41 @@ class OrderExecutor:
         )
         return _to_order(raw_order)
 
+    def close_position(self, symbol: str) -> Order | None:
+        """Emergency manual close: flattens whatever position `symbol`
+        currently has right now - stock or option, long or short - with a
+        single market order. Asks the broker what's actually open rather
+        than needing a TradeSetup/OptionSignal/saved state, so it works
+        regardless of which strategy (or none - a manually-opened position
+        works too) opened it.
+
+        This is the "get out now, don't wait for the next scheduled check
+        or the strategy's own exit logic" path - see main.py's `close`
+        CLI command. Returns None if there's no open position for `symbol`.
+        """
+        raw_position = self.client.get_position(symbol)
+        if raw_position is None:
+            logger.info("%s: no open position to close", symbol)
+            return None
+
+        qty = float(raw_position["qty"])
+        if qty == 0:
+            return None
+
+        asset_class = raw_position.get("asset_class", "us_equity")
+        is_option = asset_class == "us_option"
+        if is_option:
+            side = "sell_to_close" if qty > 0 else "buy_to_close"
+        else:
+            side = "sell" if qty > 0 else "buy"
+
+        logger.warning("%s: EMERGENCY CLOSE - submitting %s %d (%s)", symbol, side, abs(qty), asset_class)
+        raw_order = self.client.submit_order(
+            symbol=symbol, qty=abs(qty), side=side,
+            asset_class="option" if is_option else "equity", order_type="market", time_in_force="day",
+        )
+        return _to_order(raw_order)
+
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order by ID. Returns True if the cancel request succeeded."""
         try:

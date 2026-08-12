@@ -4,6 +4,8 @@ config/credentials.yaml
 schwab_token.json
 *trading_halted.lock
 peak_equity.json
+sr_open_setups.json
+breakout_open_setups.json
 
 # Python
 __pycache__/

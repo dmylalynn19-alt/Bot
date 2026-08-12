@@ -16,6 +16,8 @@ import pytest
 from broker.order_executor import OrderExecutor, OrderStatus
 from core.options_strategy import OptionRight, OptionSignal
 from core.regime_strategies import Direction, RegimeLabel, Signal
+from core.sr_strategy import TradeDirection, TradeSetup
+from core.support_resistance import Level
 
 
 class FakeBrokerClient:
@@ -60,6 +62,71 @@ def _option_signal(contracts: int = 2, limit_price: float = 3.5) -> OptionSignal
         contracts=contracts, limit_price=limit_price, stop_loss_pct=0.5, take_profit_pct=1.0, confidence=0.8,
         timestamp=pd.Timestamp("2024-01-01", tz=timezone.utc), reasoning="test",
     )
+
+
+def _trade_setup(symbol: str = "AAPL", direction: TradeDirection = TradeDirection.LONG) -> TradeSetup:
+    ts = pd.Timestamp("2024-01-15", tz=timezone.utc)
+    level = Level(price=95.0, kind="support" if direction == TradeDirection.LONG else "resistance", touches=2, first_touch=ts, last_touch=ts)
+    return TradeSetup(
+        symbol=symbol, direction=direction, level=level, entry_price=100.0, stop_price=95.0, target_price=110.0,
+        confirmations={}, confidence=1.0, timestamp=ts, reasoning="test",
+    )
+
+
+def test_execute_trade_setup_submits_a_buy_market_order() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+
+    order = executor.execute_trade_setup(_trade_setup(), shares=50)
+
+    assert order is not None
+    call = client.submitted_orders[0]
+    assert call["symbol"] == "AAPL"
+    assert call["side"] == "buy"
+    assert call["asset_class"] == "equity"
+    assert call["order_type"] == "market"
+    assert call["qty"] == 50
+
+
+def test_execute_trade_setup_returns_none_for_zero_shares() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+    assert executor.execute_trade_setup(_trade_setup(), shares=0) is None
+    assert client.submitted_orders == []
+
+
+def test_execute_trade_setup_refuses_short_setups() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+    order = executor.execute_trade_setup(_trade_setup(direction=TradeDirection.SHORT), shares=50)
+    assert order is None
+    assert client.submitted_orders == []
+
+
+def test_close_trade_setup_position_submits_a_sell_market_order() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+
+    order = executor.close_trade_setup_position(_trade_setup(), shares=50, reason="target hit")
+
+    assert order is not None
+    call = client.submitted_orders[0]
+    assert call["side"] == "sell"
+    assert call["asset_class"] == "equity"
+    assert call["order_type"] == "market"
+
+
+def test_close_trade_setup_position_returns_none_for_short_setups() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+    order = executor.close_trade_setup_position(_trade_setup(direction=TradeDirection.SHORT), shares=50)
+    assert order is None
+
+
+def test_close_trade_setup_position_returns_none_for_zero_shares() -> None:
+    client = FakeBrokerClient()
+    executor = OrderExecutor(client)
+    assert executor.close_trade_setup_position(_trade_setup(), shares=0) is None
 
 
 def test_execute_signal_submits_a_market_order_for_the_delta() -> None:

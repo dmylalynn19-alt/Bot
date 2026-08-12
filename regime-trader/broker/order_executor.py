@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from core.options_strategy import OptionSignal
 from core.regime_strategies import Signal
+from core.sr_strategy import TradeDirection, TradeSetup
 
 if TYPE_CHECKING:
     from broker.base import BrokerClient
@@ -123,6 +124,49 @@ class OrderExecutor:
         logger.info("%s: closing %d contracts (%s)", occ_symbol, contracts, reason or "no reason given")
         raw_order = self.client.submit_order(
             symbol=occ_symbol, qty=contracts, side="sell_to_close", asset_class="option", order_type="market", time_in_force="day"
+        )
+        return _to_order(raw_order)
+
+    def execute_trade_setup(self, setup: TradeSetup, shares: int) -> Order | None:
+        """Submit a market order to open a position from a confirmed
+        core.sr_strategy.TradeSetup (or core.breakout_strategy, which
+        produces the same type). `shares` comes from
+        RiskManager.validate_trade_setup - a TradeSetup carries no size of
+        its own.
+
+        LONG only for now: a SHORT setup needs SELL_SHORT/BUY_TO_COVER
+        equity order types on Schwab (not yet wired into
+        broker/schwab_client.py's order builders - only plain buy/sell) -
+        submitting a plain "sell" with no existing position would work by
+        implicit short-open convention on Alpaca but likely get rejected by
+        Schwab, so this refuses SHORT setups outright rather than behave
+        inconsistently between brokers. Returns None (submits nothing) for
+        a SHORT setup or fewer than 1 share.
+        """
+        if setup.direction == TradeDirection.SHORT:
+            logger.warning(
+                "%s: SHORT setup not executed - short-equity order routing isn't wired for every broker yet", setup.symbol
+            )
+            return None
+        if shares < 1:
+            return None
+        logger.info(
+            "%s: submitting buy %d shares (long @ %.2f, stop=%.2f, target=%.2f)",
+            setup.symbol, shares, setup.entry_price, setup.stop_price, setup.target_price,
+        )
+        raw_order = self.client.submit_order(
+            symbol=setup.symbol, qty=shares, side="buy", asset_class="equity", order_type="market", time_in_force="day"
+        )
+        return _to_order(raw_order)
+
+    def close_trade_setup_position(self, setup: TradeSetup, shares: float, reason: str = "") -> Order | None:
+        """Submit a market order to close a position opened via
+        execute_trade_setup (LONG only - see execute_trade_setup)."""
+        if setup.direction == TradeDirection.SHORT or shares <= 0:
+            return None
+        logger.info("%s: closing long position, %d shares (%s)", setup.symbol, shares, reason or "no reason given")
+        raw_order = self.client.submit_order(
+            symbol=setup.symbol, qty=shares, side="sell", asset_class="equity", order_type="market", time_in_force="day"
         )
         return _to_order(raw_order)
 

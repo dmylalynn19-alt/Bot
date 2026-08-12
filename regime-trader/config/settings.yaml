@@ -29,6 +29,13 @@ broker:
     - AMD
   timeframe: 1Day               # Bar timeframe for data fetching (e.g. 1Day, 1Hour, 15Min)
 
+# Where the "sr"/"breakout" live strategies persist each open position's
+# originating TradeSetup (level/stop/target) across process runs - neither
+# broker's API remembers why a position was opened, only that it exists.
+# See broker/setup_state.py.
+sr_state_file: sr_open_setups.json
+breakout_state_file: breakout_open_setups.json
+
 # ------------------------------------------------------------------------------
 # Hidden Markov Model regime detection
 # ------------------------------------------------------------------------------

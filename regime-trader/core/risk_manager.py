@@ -31,6 +31,7 @@ import pandas as pd
 from broker.position_tracker import Position
 from core.options_strategy import OptionSignal
 from core.regime_strategies import Direction, Signal
+from core.sr_strategy import TradeSetup
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,25 @@ class OptionRiskDecision:
 
     approved: bool
     modified_signal: OptionSignal | None
+    rejection_reason: str | None
+    modifications: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TradeSetupRiskDecision:
+    """The outcome of validate_trade_setup - the core.sr_strategy.TradeSetup
+    (support/resistance and breakout strategies both produce this type)
+    counterpart to RiskDecision/OptionRiskDecision.
+
+    Unlike Signal (position_size_pct already on the object) or OptionSignal
+    (contracts already on the object), a TradeSetup carries no size of its
+    own - it's a *signal*, not a sized order - so `shares` is computed here
+    and carried alongside the (unmodified) setup rather than folded into it.
+    """
+
+    approved: bool
+    modified_setup: TradeSetup | None
+    shares: int
     rejection_reason: str | None
     modifications: list[str] = field(default_factory=list)
 
@@ -698,3 +718,80 @@ class RiskManager:
     def _reject_option(self, reason: str) -> OptionRiskDecision:
         logger.warning("Option signal rejected: %s", reason)
         return OptionRiskDecision(approved=False, modified_signal=None, rejection_reason=reason, modifications=[])
+
+    # ------------------------------------------------------------------
+    # core.sr_strategy.TradeSetup / core.breakout_strategy validation
+    # ------------------------------------------------------------------
+
+    def validate_trade_setup(
+        self,
+        setup: TradeSetup,
+        portfolio: PortfolioState,
+        now: pd.Timestamp | None = None,
+    ) -> TradeSetupRiskDecision:
+        """Absolute veto over a core.sr_strategy.TradeSetup - the shared
+        counterpart to validate_signal/validate_option_signal for the
+        support/resistance and breakout strategies (both produce this same
+        type). Since a TradeSetup carries no size of its own, this also
+        computes it: risk-based (`max_risk_per_trade` of equity / the
+        setup's own stop distance, capped by `max_single_position` of
+        notional) - the same sizing convention backtest.sr_backtester.
+        SRBacktester uses, so live and backtested position sizes are
+        computed identically for the same setup.
+
+        Runs: circuit breakers, a sane stop check, duplicate-order block,
+        max daily trades, max concurrent position cap, then risk-based
+        share sizing (capped by max_single_position notional and circuit-
+        breaker REDUCE), then minimum position size / buying power on the
+        final number.
+        """
+        now = now if now is not None else pd.Timestamp.now(tz="UTC")
+
+        breaker_status = self.circuit_breaker.update(portfolio)
+        if self.circuit_breaker.is_halted():
+            return self._reject_trade_setup(f"circuit breaker active: {breaker_status.value} - all trading halted")
+
+        per_share_risk = abs(setup.entry_price - setup.stop_price)
+        if per_share_risk <= 0 or not math.isfinite(per_share_risk):
+            return self._reject_trade_setup("invalid stop price - cannot size position")
+
+        if self._is_duplicate(setup.symbol, setup.direction.value, now):
+            return self._reject_trade_setup(
+                f"duplicate order for {setup.symbol} {setup.direction.value} within {self.duplicate_window_seconds:.0f}s"
+            )
+
+        if portfolio.trades_today >= self.max_daily_trades:
+            return self._reject_trade_setup(f"max daily trades ({self.max_daily_trades}) reached")
+
+        if setup.symbol not in portfolio.positions and len(portfolio.positions) >= self.max_concurrent:
+            return self._reject_trade_setup(f"max concurrent positions ({self.max_concurrent}) reached")
+
+        modifications: list[str] = []
+        risk_dollars = portfolio.equity * self.max_risk_per_trade
+        shares = int(risk_dollars / per_share_risk)
+
+        max_notional_shares = int(portfolio.equity * self.max_single_position / setup.entry_price)
+        if max_notional_shares < shares:
+            shares = max_notional_shares
+            modifications.append(f"shares capped at {self.max_single_position:.0%} of equity notional")
+
+        size_mult = self.circuit_breaker.size_multiplier()
+        if size_mult < 1.0:
+            shares = int(shares * size_mult)
+            modifications.append(f"circuit breaker {breaker_status.value} active: shares x{size_mult}")
+
+        if shares < 1:
+            return self._reject_trade_setup("sized position rounds to zero shares")
+
+        notional = shares * setup.entry_price
+        if notional < self.min_position_dollars:
+            return self._reject_trade_setup(f"sized position (${notional:,.2f}) below minimum (${self.min_position_dollars:,.2f})")
+        if notional > portfolio.buying_power:
+            return self._reject_trade_setup(f"required notional (${notional:,.2f}) exceeds buying power (${portfolio.buying_power:,.2f})")
+
+        self._record_order(setup.symbol, setup.direction.value, now)
+        return TradeSetupRiskDecision(approved=True, modified_setup=setup, shares=shares, rejection_reason=None, modifications=modifications)
+
+    def _reject_trade_setup(self, reason: str) -> TradeSetupRiskDecision:
+        logger.warning("Trade setup rejected: %s", reason)
+        return TradeSetupRiskDecision(approved=False, modified_setup=None, shares=0, rejection_reason=reason, modifications=[])

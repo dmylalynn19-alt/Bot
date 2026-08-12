@@ -626,7 +626,13 @@ _STRATEGIES = {
 }
 
 
-def run(config: dict, once: bool = False, strategy: str = "options", mode: str = "automatic") -> None:
+def run(
+    config: dict,
+    once: bool = False,
+    strategy: str = "options",
+    mode: str = "automatic",
+    interval_minutes: int | None = None,
+) -> None:
     """Run the live/paper trading loop.
 
     strategy: "options" (default) indicator-driven directional calls/puts;
@@ -637,9 +643,21 @@ def run(config: dict, once: bool = False, strategy: str = "options", mode: str =
     immediately; "manual" asks for y/N confirmation before each one (see
     _confirm_trade) - applies to all four strategies.
     once=True: build the pipeline, execute a single pass, and return -
-    useful for testing or a manual/cron-triggered run.
-    once=False (default): run forever, executing one pass per day at 09:35
-    system-local time via the `schedule` library. Ctrl+C to stop.
+    useful for testing or a manual/cron-triggered run. `interval_minutes`
+    has no effect here.
+    once=False (default): run forever.
+        interval_minutes=None (default): one pass per day at 09:35 system-
+            local time. Fine for options with min_days_to_expiration set
+            well above a day, or for "regime" - the position doesn't need
+            intraday attention.
+        interval_minutes=N: one pass every N minutes, all day (each pass
+            still exits immediately, cheaply, if the market's closed - see
+            client.is_market_open() in every run_once_*). REQUIRED, not
+            optional, for 0-2 DTE options (or any timeframe where a stop
+            could be missed for a whole day) - a same-day option can lose
+            most of its value within hours, and this system otherwise only
+            checks positions once a day.
+    Ctrl+C to stop, either way.
     """
     if strategy not in _STRATEGIES:
         raise ValueError(f"Unknown strategy '{strategy}'; expected one of {sorted(_STRATEGIES)}")
@@ -653,8 +671,12 @@ def run(config: dict, once: bool = False, strategy: str = "options", mode: str =
 
     import schedule
 
-    schedule.every().day.at("09:35").do(run_fn, config=config, pipeline=pipeline, mode=mode)
-    logger.info("Scheduled to run daily at 09:35 (system-local time, mode=%s) - press Ctrl+C to stop", mode)
+    if interval_minutes is not None:
+        schedule.every(interval_minutes).minutes.do(run_fn, config=config, pipeline=pipeline, mode=mode)
+        logger.info("Scheduled to run every %d minute(s) (mode=%s) - press Ctrl+C to stop", interval_minutes, mode)
+    else:
+        schedule.every().day.at("09:35").do(run_fn, config=config, pipeline=pipeline, mode=mode)
+        logger.info("Scheduled to run daily at 09:35 (system-local time, mode=%s) - press Ctrl+C to stop", mode)
     while True:
         schedule.run_pending()
         time.sleep(30)
@@ -775,6 +797,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="automatic",
         help="'automatic' (default): execute every risk-approved trade immediately. 'manual': ask y/N before each one.",
     )
+    run_parser.add_argument(
+        "--interval-minutes",
+        dest="interval_minutes",
+        type=int,
+        default=None,
+        help=(
+            "Check every N minutes instead of once daily at 09:35 (ignored with --once). "
+            "Required for 0-2 DTE options (options_strategy.max_days_to_expiration <= ~2) or "
+            "any intraday sr/breakout timeframe - a same-day option can lose most of its value "
+            "within hours, well before the next once-a-day check would catch it. 15 is a reasonable start."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -791,7 +825,7 @@ def main() -> None:
             args.symbols = config["broker"]["symbols"]
         run_backtest(args, config)
     elif args.command == "run":
-        run(config, once=args.once, strategy=args.strategy, mode=args.mode)
+        run(config, once=args.once, strategy=args.strategy, mode=args.mode, interval_minutes=args.interval_minutes)
     else:
         run(config)
 

@@ -83,12 +83,23 @@ indicators:
 # ------------------------------------------------------------------------------
 # Options strategy (core.options_strategy) - directional calls/puts only,
 # sized by defined premium risk. Requires options trading enabled/approved
-# on your Alpaca account.
+# on your broker account.
+#
+# min/max_days_to_expiration set to 0-2 (same-day through 2-day) here -
+# same-day/next-day options move (and decay) fast, both for and against
+# you, within a single trading session. That has a real consequence for
+# HOW you run this: `python main.py run` alone only checks positions once a
+# day (09:35) - nowhere near often enough to catch a same-day stop or
+# exit before expiration. Run with `--interval-minutes 15` (or tighter) for
+# 0-2 DTE so it actually checks intraday - see main.py `run --help`.
+# Also note: not every symbol has daily/near-daily expirations available
+# (SPY/QQQ reliably do; many individual stocks only have weekly/monthly) -
+# if the chain comes back empty for a symbol at this window, that's why.
 # ------------------------------------------------------------------------------
 options_strategy:
   target_delta: 0.35              # Preferred absolute delta of the selected contract
-  min_days_to_expiration: 21      # Don't buy contracts expiring sooner than this (theta decay)
-  max_days_to_expiration: 45      # Don't buy contracts expiring later than this (diluted leverage)
+  min_days_to_expiration: 0       # Same-day (0DTE) contracts allowed - see note above
+  max_days_to_expiration: 2       # ...through 2-day contracts
   max_risk_per_trade: 0.02        # Max fraction of equity risked (premium paid) on a single trade
   stop_loss_pct: 0.50             # Exit if premium drops this fraction from entry
   take_profit_pct: 1.00           # Exit if premium rises this fraction from entry

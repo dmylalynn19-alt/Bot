@@ -22,6 +22,11 @@ broker connection:
   Bollinger Band confluence on each symbol and, when enough of the four
   agree, buys a single-leg call or put (never sells/writes) sized by defined
   premium risk, with a stop-loss/take-profit/indicator-reversal exit.
+  Defaults to 0-2 day expirations (`options_strategy.max_days_to_expiration`)
+  - same-day/next-day contracts move (and decay) fast, so running this
+  strategy **requires** `--interval-minutes` (see below), not the once-daily
+  default - a same-day option can lose most of its value in hours, well
+  before a once-a-day check would catch it.
 - **regime** (`python main.py run --strategy regime`): a Hidden Markov Model
   classifies each symbol into a volatility/trend regime and an allocation
   strategy maps that to a target stock exposure and leverage.
@@ -168,8 +173,12 @@ python main.py run --once --strategy sr
 # Breakout strategy - run forever, one pass per bar-close
 python main.py run --strategy breakout
 
-# Options strategy (default)
+# Options strategy (default) - single pass now
 python main.py run --once
+
+# Options strategy, running for real: checks every 15 minutes during market
+# hours (REQUIRED for the default 0-2 DTE window - see above)
+python main.py run --strategy options --interval-minutes 15
 
 # Regime/stock strategy instead
 python main.py run --once --strategy regime
